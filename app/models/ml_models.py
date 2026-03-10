@@ -1,0 +1,18 @@
+FEATURE_NAMES = [
+    "key_size",
+    "uses_md5",
+    "uses_sha1",
+    "uses_des",
+    "uses_rc2",
+    "uses_ecb",
+    "rsa_key_small",
+    "aes_key_small",
+    "hardcoded_key",
+    "insecure_random",
+    "tls_version_numeric",
+    "cert_valid_days",
+    "forward_secrecy",
+    "has_hsts",
+    "self_signed",
+    "rule_score",
+]
