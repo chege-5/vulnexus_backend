@@ -21,6 +21,68 @@ class ScanStatusResponse(BaseModel):
     finished_at: Optional[datetime] = None
 
 
+class ScanHistoryItem(BaseModel):
+    id: uuid.UUID
+    type: str
+    target: str
+    status: str
+    overall_score: Optional[float] = None
+    vulnerability_count: int = 0
+    queued_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
+class ReportListItem(BaseModel):
+    id: uuid.UUID
+    name: str
+    type: str
+    target: str
+    date: Optional[str] = None
+    status: str
+    format: str = "PDF"
+
+
+class VulnerabilityListItem(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str
+    severity: str
+    target: str
+    scan_id: uuid.UUID
+    cve: str = "N/A"
+    cvss: Optional[float] = None
+    status: str = "open"
+    discovered: Optional[datetime] = None
+    remediation: Optional[str] = None
+    file_path: Optional[str] = None
+    line_number: Optional[int] = None
+
+
+class VulnerabilityDetailOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    severity: str
+    target: str
+    endpoint: str
+    cve: str
+    cvss: float
+    status: str
+    discovered: str
+    last_seen: str
+    description: str
+    impact: str
+    remediation: str
+    affected_versions: str
+    references: list[str]
+    evidence: str
+    timeline: list[dict]
+    file_path: Optional[str] = None
+    line_number: Optional[int] = None
+    ml_score: Optional[float] = None
+    scan_id: uuid.UUID
+
+
 class VulnerabilityOut(BaseModel):
     id: uuid.UUID
     rule_id: Optional[str] = None
@@ -64,6 +126,30 @@ class DashboardResponse(BaseModel):
     vulnerabilities_by_severity: dict[str, int]
     recent_scans: list[dict]
     average_risk_score: Optional[float] = None
+    top_vulnerabilities: list[dict] = Field(default_factory=list)
+    scan_trend: list[dict] = Field(default_factory=list)
+    projects: int = 0
+    repositories: int = 0
+    organizations: int = 0
+    open_findings: int = 0
+    critical_findings: int = 0
+    high_findings: int = 0
+    medium_findings: int = 0
+    low_findings: int = 0
+    resolved_findings: int = 0
+    ignored_findings: int = 0
+    compliance_score: Optional[float] = None
+    owasp_score: Optional[float] = None
+    nist_score: Optional[float] = None
+    cwe_score: Optional[float] = None
+    final_audit_verdict: Optional[str] = None
+    final_audit_reason: Optional[str] = None
+    certificate_health: Optional[str] = None
+    tls_health: Optional[str] = None
+    repository_status: list[dict] = Field(default_factory=list)
+    recent_reports: list[dict] = Field(default_factory=list)
+    recent_ai_conversations: list[dict] = Field(default_factory=list)
+    risk_heatmap: list[dict] = Field(default_factory=list)
 
 
 class CryptoFeatures(BaseModel):

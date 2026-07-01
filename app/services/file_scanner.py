@@ -8,14 +8,14 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 WEAK_HASH_PATTERNS = [
-    (r'\bMD5\b|\.md5\(|hashlib\.md5|MessageDigest\.getInstance\(\s*"MD5"', "MD5"),
-    (r'\bSHA[\-_]?1\b|\.sha1\(|hashlib\.sha1|MessageDigest\.getInstance\(\s*"SHA-1"', "SHA1"),
+    (r'\bMD5\b|\.md5\(|hashlib\.md5|MessageDigest\.getInstance\(\s*"MD5"|crypto\.createHash\(\s*\'md5\'\s*\)|php_md5\(', "MD5"),
+    (r'\bSHA[\-_]?1\b|\.sha1\(|hashlib\.sha1|MessageDigest\.getInstance\(\s*"SHA-1"|crypto\.createHash\(\s*\'sha1\'\s*\)|php_sha1\(', "SHA1"),
 ]
 
 WEAK_CIPHER_PATTERNS = [
-    (r'\bDES\b|DESede|DES/|Cipher\.getInstance\(\s*"DES', "DES"),
-    (r'\bRC2\b|RC2/|Cipher\.getInstance\(\s*"RC2', "RC2"),
-    (r'AES/ECB|AES\.MODE_ECB|"AES/ECB/', "AES-ECB"),
+    (r'\bDES\b|DESede|DES/|Cipher\.getInstance\(\s*"DES|crypto\.createCipher\(\s*\'des\'\s*\)|mcrypt_module_open\(\s*\'des\'', "DES"),
+    (r'\bRC2\b|RC2/|Cipher\.getInstance\(\s*"RC2|crypto\.createCipher\(\s*\'rc2\'\s*\)', "RC2"),
+    (r'AES/ECB|AES\.MODE_ECB|"AES/ECB/|crypto\.createCipher\(\s*\'aes-\d+-ecb\'\s*\)', "AES-ECB"),
 ]
 
 SMALL_KEY_PATTERNS = [

@@ -15,8 +15,8 @@ User Input → Static Code Scanner → Web TLS Scanner → Rule Engine
 | Component | Technology |
 |-----------|-----------|
 | API Framework | FastAPI (async) |
-| Database | PostgreSQL 16 + SQLAlchemy 2.0 |
-| Migrations | Alembic |
+| Database | PostgreSQL + SQLAlchemy (async) |
+| Schema setup | SQLAlchemy `create_all` on startup |
 | ML | scikit-learn (Random Forest + Isolation Forest) |
 | Reports | WeasyPrint (PDF) / Jinja2 (HTML) |
 | Performance | Rust via PyO3 (optional) |
@@ -38,10 +38,10 @@ cp .env.example .env
 docker-compose up --build -d
 ```
 
-### 3. Run migrations
+### 3. Initialize database schema
 
 ```bash
-docker-compose exec backend alembic upgrade head
+docker-compose exec backend python scripts/init_db.py
 ```
 
 ### 4. Train ML model
@@ -64,8 +64,8 @@ python -m venv venv
 venv\Scripts\activate      # Windows
 pip install -r requirements.txt
 
-# Start PostgreSQL locally, then:
-alembic upgrade head
+# Start PostgreSQL locally (or use Docker), then:
+python scripts/init_db.py
 python scripts/train_model.py
 uvicorn app.main:app --reload
 ```
@@ -90,7 +90,8 @@ backend/
 ├── app/
 │   ├── main.py                 # FastAPI application
 │   ├── config.py               # Settings management
-│   ├── deps.py                 # Database session factory
+│   ├── deps.py                 # PostgreSQL session + dependencies
+│   ├── database.py             # SQLAlchemy engine and schema init
 │   ├── routes/
 │   │   ├── scan_routes.py      # Upload/scan endpoints
 │   │   ├── report_routes.py    # Report download endpoint
@@ -123,17 +124,12 @@ backend/
 │   ├── test_web_scanner.py
 │   ├── test_ai_model.py
 │   └── test_integration.py
-├── alembic/
-│   ├── env.py
-│   └── versions/
-│       └── 001_initial_schema.py
 ├── scripts/
 │   ├── train_model.py
 │   └── init_db.py
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
-├── alembic.ini
 └── .env.example
 ```
 
@@ -198,7 +194,7 @@ pytest tests/ -v --cov=app --cov-report=html
 
 See `.env.example` for all configuration options. Key variables:
 
-- `DATABASE_URL` — PostgreSQL connection string
+- `DATABASE_URL` — PostgreSQL connection string (`postgresql+asyncpg://user:pass@host:5432/dbname`)
 - `SECRET_KEY` — JWT/session secret
 - `NVD_API_KEY` — NVD API key (optional, increases rate limits)
 - `LLM_ENABLED` — Enable AI-generated remediation text
