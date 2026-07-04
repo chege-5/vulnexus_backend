@@ -15,6 +15,7 @@ from app.services.web_scanner import scan_url
 from app.services.rule_engine import evaluate_rules
 from app.services.ai_risk_model import AIRiskModel
 from app.services.cve_mapper import map_vulnerability_to_cves
+from app.services.intelligence.service import map_finding_intelligence
 from app.services.report_generator import build_report, get_remediation
 from app.services.audit_engine import build_ai_insight, build_compliance_checks, derive_final_audit_verdict, infer_vulnerability_profile
 from app.services.github_repo_scanner import materialize_repository_source
@@ -671,30 +672,64 @@ def _map_severity(sev_str: str) -> str:
 
 
 async def _map_cves_for_vulns(db: AsyncSession, vulns: list[RuleVulnerability]) -> tuple[list[dict], dict[str, str]]:
-    all_cves = []
-    seen_cve_ids = set()
+    keyword_vulns: dict[str, RuleVulnerability] = {}
+    for vuln in vulns:
+        keyword = vuln.crypto_feature or vuln.rule_id
+        if keyword and keyword not in keyword_vulns:
+            keyword_vulns[keyword] = vuln
+
+    mapped_results = await asyncio.gather(
+        *(
+            map_finding_intelligence(
+                keyword,
+                rule_id=vuln.rule_id,
+                severity=vuln.severity,
+                description=vuln.description,
+                metadata=vuln.model_dump(),
+            )
+            for keyword, vuln in keyword_vulns.items()
+        ),
+        return_exceptions=True,
+    )
+
+    all_cves: list[dict] = []
+    seen_cve_ids: set[str] = set()
     keyword_to_cve: dict[str, str] = {}
-    for v in vulns:
-        keyword = v.crypto_feature or v.rule_id
-        if not keyword:
+
+    for (keyword, _vuln), mapped in zip(keyword_vulns.items(), mapped_results):
+        if isinstance(mapped, Exception):
+            logger.debug("Intelligence mapping failed for %s: %s", keyword, mapped)
             continue
-        cves = await map_vulnerability_to_cves(keyword)
-        for cve in cves:
-            cve_id = cve.get("cve_id")
-            if cve_id:
-                if keyword not in keyword_to_cve:
-                    keyword_to_cve[keyword] = cve_id
-                if cve_id not in seen_cve_ids:
-                    seen_cve_ids.add(cve_id)
-                    all_cves.append(cve)
-                    existing = await db.execute(select(CVEEntry).where(CVEEntry.cve_id == cve_id))
-                    if not existing.scalar_one_or_none():
-                        db.add(CVEEntry(
-                            cve_id=cve_id,
-                            summary=cve.get("summary"),
-                            cvss_score=cve.get("cvss_score"),
-                            published_date=None,
-                        ))
+
+        if mapped.requires_cve_lookup and mapped.cve_id:
+            keyword_to_cve[keyword] = mapped.cve_id
+
+        for cve in mapped.provider_hits:
+            cve_id = cve.get("identifier")
+            if not cve_id:
+                continue
+            if keyword not in keyword_to_cve:
+                keyword_to_cve[keyword] = cve_id
+            normalized = {
+                "cve_id": cve_id,
+                "summary": cve.get("summary"),
+                "cvss_score": cve.get("cvss_score"),
+                "published_date": cve.get("published_date"),
+                "source": cve.get("source"),
+                "references": cve.get("references") or [],
+            }
+            if cve_id not in seen_cve_ids:
+                seen_cve_ids.add(cve_id)
+                all_cves.append(normalized)
+                existing = await db.execute(select(CVEEntry).where(CVEEntry.cve_id == cve_id))
+                if not existing.scalar_one_or_none():
+                    db.add(CVEEntry(
+                        cve_id=cve_id,
+                        summary=normalized.get("summary"),
+                        cvss_score=normalized.get("cvss_score"),
+                        published_date=None,
+                        references=normalized.get("references"),
+                    ))
     await db.commit()
     return all_cves, keyword_to_cve
 

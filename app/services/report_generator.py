@@ -1,9 +1,12 @@
+import asyncio
 import os
+import threading
 import uuid
 from datetime import datetime
 from typing import Optional
 from jinja2 import Template
 from app.config import settings
+from app.services.report_renderer import get_report_renderer
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -190,6 +193,11 @@ footer {
     body { background: white; }
     .page { padding: 0; }
     .section, .metric, .cover { box-shadow: none; }
+    .section { break-inside: avoid; page-break-inside: avoid; }
+    .finding { break-inside: avoid; page-break-inside: avoid; }
+    table { break-inside: auto; }
+    thead { display: table-header-group; }
+    tr { break-inside: avoid; page-break-inside: avoid; }
 }
 </style>
 </head>
@@ -440,6 +448,34 @@ def generate_html_report(
     )
 
 
+def generate_report_html_document(
+    scan_id: uuid.UUID,
+    target: str,
+    scan_type: str,
+    overall_score: float,
+    vulnerabilities: list[dict],
+    cve_details: list[dict],
+    compliance_checks: list[dict] | None = None,
+    audit_verdict: dict | None = None,
+    ai_insight: dict | None = None,
+    started_at=None,
+    finished_at=None,
+) -> str:
+    return generate_html_report(
+        scan_id=str(scan_id),
+        target=target,
+        scan_type=scan_type,
+        overall_score=overall_score,
+        vulnerabilities=vulnerabilities,
+        cve_details=cve_details,
+        compliance_checks=compliance_checks,
+        audit_verdict=audit_verdict,
+        ai_insight=ai_insight,
+        started_at=str(started_at) if started_at else None,
+        finished_at=str(finished_at) if finished_at else None,
+    )
+
+
 def build_report_payload(
     scan_id: uuid.UUID,
     target: str,
@@ -491,16 +527,34 @@ def build_report_payload(
 
 
 def generate_pdf_report(html_content: str, output_path: str) -> str:
+    async def _render() -> str:
+        renderer = get_report_renderer()
+        return await renderer.render_pdf(
+            html_content,
+            output_path,
+            metadata={"header_text": settings.REPORT_PDF_HEADER, "footer_text": settings.REPORT_PDF_FOOTER},
+        )
+
     try:
-        from weasyprint import HTML
-        HTML(string=html_content).write_pdf(output_path)
-        return output_path
-    except ImportError:
-        html_path = output_path.replace(".pdf", ".html")
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        logger.warning("WeasyPrint not available, saved HTML report instead")
-        return html_path
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_render())
+
+    result: dict[str, str] = {}
+    error: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            result["path"] = asyncio.run(_render())
+        except BaseException as exc:  # pragma: no cover - thread handoff failure
+            error.append(exc)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+    return result["path"]
 
 
 def build_report(
@@ -519,8 +573,8 @@ def build_report(
     reports_dir = os.path.join(settings.UPLOAD_DIR, "reports")
     os.makedirs(reports_dir, exist_ok=True)
 
-    html = generate_html_report(
-        scan_id=str(scan_id),
+    html = generate_report_html_document(
+        scan_id=scan_id,
         target=target,
         scan_type=scan_type,
         overall_score=overall_score,
@@ -529,8 +583,8 @@ def build_report(
         compliance_checks=compliance_checks,
         audit_verdict=audit_verdict,
         ai_insight=ai_insight,
-        started_at=str(started_at) if started_at else None,
-        finished_at=str(finished_at) if finished_at else None,
+        started_at=started_at,
+        finished_at=finished_at,
     )
 
     pdf_path = os.path.join(reports_dir, f"{scan_id}.pdf")

@@ -19,6 +19,7 @@ from app.models.pydantic_models import (
     VulnerabilityOut,
     ScanHistoryItem,
 )
+from app.utils.cache import cache
 from app.utils.file_utils import validate_upload, save_upload
 from app.utils.logger import get_logger
 
@@ -225,8 +226,8 @@ async def scan_github_repository(
     await db.commit()
     await db.refresh(scan)
 
-    from app.services.tasks import run_github_repo_scan
-    run_github_repo_scan.delay(str(scan.id), str(current_user.id), payload.organization, payload.repository, payload.branch, payload.folder or "")
+    from app.celery_app import run_github_scan_task
+    run_github_scan_task.delay(str(scan.id), str(current_user.id), payload.organization, payload.repository, payload.branch, payload.folder or "")
 
     logger.info(f"Queued GitHub repository scan {scan.id} for {target}")
     return ScanUploadResponse(scan_id=scan.id, status="queued")
@@ -246,6 +247,17 @@ async def scan_status(
         raise HTTPException(status_code=404, detail="Scan not found")
     if scan.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
+
+    cached_progress = await cache.get("scan_progress", str(scan.id))
+    if cached_progress:
+        return ScanStatusResponse(
+            scan_id=scan.id,
+            status=cached_progress.get("status", scan.status),
+            progress=int(cached_progress.get("progress", scan.progress) or 0),
+            started_at=scan.started_at,
+            finished_at=scan.finished_at,
+        )
+
     return ScanStatusResponse(
         scan_id=scan.id,
         status=scan.status,
