@@ -1,8 +1,10 @@
 import ssl
 import socket
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Optional
+
+from app.core.http_client import create_sync_client, request_with_retry_sync
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -55,7 +57,7 @@ def get_tls_info(hostname: str, port: int = 443, timeout: float = 10.0) -> TLSIn
                     if na:
                         info.cert_not_after = _parse_cert_date(na)
                     if info.cert_not_after:
-                        info.cert_valid_days = (info.cert_not_after - datetime.utcnow()).days
+                        info.cert_valid_days = (info.cert_not_after - datetime.now(timezone.utc)).days
                         info.cert_expired = info.cert_valid_days < 0
 
                     info.self_signed = info.cert_subject == info.cert_issuer
@@ -88,22 +90,18 @@ def _parse_cert_dn(dn_tuple) -> dict:
 def _parse_cert_date(date_str: str) -> datetime:
     for fmt in ("%b %d %H:%M:%S %Y %Z", "%b  %d %H:%M:%S %Y %Z"):
         try:
-            return datetime.strptime(date_str, fmt)
+            return datetime.strptime(date_str, fmt).replace(tzinfo=timezone.utc)
         except ValueError:
             continue
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
-def check_hsts(hostname: str) -> bool:
-    import httpx
-    from app.config import settings
+def check_hsts(hostname: str) -> bool | None:
     try:
-        r = httpx.get(
-            f"https://{hostname}",
-            timeout=10,
-            follow_redirects=True,
-            verify=settings.VERIFY_SCAN_TARGETS,
-        )
+        with create_sync_client(timeout=10) as client:
+            r = request_with_retry_sync(client, "GET", f"https://{hostname}")
+        if r is None:
+            return None
         return "strict-transport-security" in {k.lower() for k in r.headers.keys()}
     except Exception:
-        return False
+        return None

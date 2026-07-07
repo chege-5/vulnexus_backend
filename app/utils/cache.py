@@ -1,5 +1,7 @@
 import json
 from typing import Optional
+
+from app.config import settings
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -69,5 +71,4 @@ class RedisCache:
                 pass
         self._fallback.clear()
 
-
-cache = RedisCache()
+cache = RedisCache(ttl=settings.INTELLIGENCE_CACHE_TTL_SECONDS)

@@ -121,6 +121,7 @@ ROLE_PERMISSIONS: dict[str, set[Permission]] = {
         Permission.AI_QUERY,
         Permission.COMPLIANCE_READ, Permission.COMPLIANCE_REPORT,
         Permission.NOTIFICATION_READ,
+        Permission.ORG_READ, Permission.ORG_WRITE,
     },
     "qa_engineer": {
         Permission.SCAN_CREATE, Permission.SCAN_READ,
@@ -130,6 +131,7 @@ ROLE_PERMISSIONS: dict[str, set[Permission]] = {
         Permission.GITHUB_CONNECT, Permission.GITHUB_SCAN,
         Permission.AI_QUERY,
         Permission.NOTIFICATION_READ,
+        Permission.ORG_READ, Permission.ORG_WRITE,
     },
     "developer": {
         Permission.SCAN_CREATE, Permission.SCAN_READ,
@@ -139,6 +141,7 @@ ROLE_PERMISSIONS: dict[str, set[Permission]] = {
         Permission.GITHUB_CONNECT, Permission.GITHUB_SCAN,
         Permission.AI_QUERY,
         Permission.NOTIFICATION_READ,
+        Permission.ORG_READ, Permission.ORG_WRITE,
     },
     "tester": {
         Permission.SCAN_CREATE, Permission.SCAN_READ,
@@ -148,6 +151,7 @@ ROLE_PERMISSIONS: dict[str, set[Permission]] = {
         Permission.GITHUB_CONNECT, Permission.GITHUB_SCAN,
         Permission.AI_QUERY,
         Permission.NOTIFICATION_READ,
+        Permission.ORG_READ, Permission.ORG_WRITE,
     },
     "viewer": {
         Permission.SCAN_READ,

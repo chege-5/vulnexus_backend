@@ -11,12 +11,17 @@ class ScanUploadResponse(BaseModel):
 
 class ScanURLRequest(BaseModel):
     url: HttpUrl
+    project_id: Optional[uuid.UUID] = None
 
 
 class ScanStatusResponse(BaseModel):
     scan_id: uuid.UUID
     status: str
     progress: int
+    stage: Optional[str] = None
+    message: Optional[str] = None
+    error_message: Optional[str] = None
+    details: dict = Field(default_factory=dict)
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
 
@@ -57,6 +62,8 @@ class VulnerabilityListItem(BaseModel):
     remediation: Optional[str] = None
     file_path: Optional[str] = None
     line_number: Optional[int] = None
+    assigned_to_id: Optional[uuid.UUID] = None
+    assigned_to_name: Optional[str] = None
 
 
 class VulnerabilityDetailOut(BaseModel):
@@ -81,6 +88,15 @@ class VulnerabilityDetailOut(BaseModel):
     line_number: Optional[int] = None
     ml_score: Optional[float] = None
     scan_id: uuid.UUID
+    assigned_to_id: Optional[uuid.UUID] = None
+    assigned_to_name: Optional[str] = None
+    owasp_category: Optional[str] = None
+    nist_control: Optional[str] = None
+    mitre_technique: Optional[str] = None
+    cwe_ids: list[str] = Field(default_factory=list)
+    known_exploit: bool = False
+    comments: list[dict] = Field(default_factory=list)
+    history: list[dict] = Field(default_factory=list)
 
 
 class VulnerabilityOut(BaseModel):
@@ -93,6 +109,15 @@ class VulnerabilityOut(BaseModel):
     file_path: Optional[str] = None
     line_number: Optional[int] = None
     remediation: Optional[str] = None
+    cvss_score: Optional[float] = None
+    cwe_ids: list[str] | None = None
+    owasp_category: Optional[str] = None
+    nist_control: Optional[str] = None
+    mitre_technique: Optional[str] = None
+    known_exploit: bool = False
+    references: list[str] | None = None
+    status: str = "open"
+    assigned_to_id: Optional[uuid.UUID] = None
 
     class Config:
         from_attributes = True

@@ -1,4 +1,8 @@
 import uuid
+import asyncio
+import ipaddress
+import socket
+from urllib.parse import urlparse
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -8,7 +12,7 @@ from app.deps import get_db
 from app import database
 from app.auth import get_current_user, get_user_from_token
 from app.rate_limit import limiter
-from app.models.db_models import Scan, ScanStatus, ScanType, Vulnerability, User
+from app.models.db_models import Scan, ScanFile, ScanStatus, ScanType, Vulnerability, User
 from app.models.db_models import GitHubConnection
 from app.services.rbac import Permission, require_permission
 from app.models.pydantic_models import (
@@ -19,14 +23,14 @@ from app.models.pydantic_models import (
     VulnerabilityOut,
     ScanHistoryItem,
 )
-from app.utils.file_utils import validate_upload, save_upload
+from app.utils.cache import cache
+from app.utils.file_utils import validate_upload, save_upload, cleanup_scan_dir
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
 
 ACTIVE_SCAN_STATUSES = [
-    ScanStatus.COMPLETED.value,
     ScanStatus.IN_PROGRESS.value,
     ScanStatus.QUEUED.value,
 ]
@@ -37,6 +41,7 @@ class GitHubRepositoryScanRequest(BaseModel):
     repository: str
     branch: str
     folder: str = ""
+    project_id: uuid.UUID | None = None
 
 
 class ConnectionManager:
@@ -89,7 +94,13 @@ async def websocket_endpoint(websocket: WebSocket, scan_id: str, token: str | No
     await manager.connect(websocket, scan_id)
     try:
         while True:
-            await websocket.receive_text()
+            cached_progress = await cache.get("scan_progress", scan_id)
+            if cached_progress:
+                await websocket.send_json(cached_progress)
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=2)
+            except asyncio.TimeoutError:
+                continue
     except WebSocketDisconnect:
         manager.disconnect(websocket, scan_id)
 
@@ -102,6 +113,27 @@ async def _count_active_scans(db: AsyncSession, user_id: uuid.UUID) -> int:
         )
     )
     return result.scalar_one()
+
+
+def _assert_allowed_scan_target(target_url: str) -> None:
+    parsed = urlparse(target_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise HTTPException(status_code=400, detail="Only http and https URLs with a hostname can be scanned")
+    hostname = parsed.hostname.lower()
+    if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
+        raise HTTPException(status_code=400, detail="Localhost and local network targets are not allowed")
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        raise HTTPException(status_code=400, detail="Unable to resolve scan target")
+    for info in infos:
+        address = info[4][0]
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            raise HTTPException(status_code=400, detail="Private, loopback, or reserved network targets are not allowed")
 
 
 @router.post("/upload-file", response_model=ScanUploadResponse)
@@ -157,6 +189,7 @@ async def scan_url_target(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission(Permission.SCAN_CREATE)),
 ):
+    _assert_allowed_scan_target(str(payload.url))
     if not current_user.is_approved:
         raise HTTPException(status_code=403, detail="Your account is not approved by admin. Please contact support.")
 
@@ -172,6 +205,7 @@ async def scan_url_target(
         target=str(payload.url),
         status=ScanStatus.QUEUED.value,
         user_id=current_user.id,
+        project_id=payload.project_id,
     )
     db.add(scan)
     await db.commit()
@@ -216,6 +250,7 @@ async def scan_github_repository(
         target=target,
         status=ScanStatus.QUEUED.value,
         user_id=current_user.id,
+        project_id=payload.project_id,
         github_org=payload.organization,
         github_repo=payload.repository,
         github_branch=payload.branch,
@@ -225,8 +260,8 @@ async def scan_github_repository(
     await db.commit()
     await db.refresh(scan)
 
-    from app.services.tasks import run_github_repo_scan
-    run_github_repo_scan.delay(str(scan.id), str(current_user.id), payload.organization, payload.repository, payload.branch, payload.folder or "")
+    from app.celery_app import run_github_scan_task
+    run_github_scan_task.delay(str(scan.id), str(current_user.id), payload.organization, payload.repository, payload.branch, payload.folder or "")
 
     logger.info(f"Queued GitHub repository scan {scan.id} for {target}")
     return ScanUploadResponse(scan_id=scan.id, status="queued")
@@ -246,10 +281,29 @@ async def scan_status(
         raise HTTPException(status_code=404, detail="Scan not found")
     if scan.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
+
+    cached_progress = await cache.get("scan_progress", str(scan.id))
+    if cached_progress:
+        return ScanStatusResponse(
+            scan_id=scan.id,
+            status=cached_progress.get("status", scan.status),
+            progress=int(cached_progress.get("progress", scan.progress) or 0),
+            stage=cached_progress.get("stage"),
+            message=cached_progress.get("message"),
+            error_message=cached_progress.get("error_message") or scan.error_message,
+            details=cached_progress.get("details") or {},
+            started_at=scan.started_at,
+            finished_at=cached_progress.get("finished_at") or scan.finished_at,
+        )
+
     return ScanStatusResponse(
         scan_id=scan.id,
         status=scan.status,
         progress=scan.progress,
+        stage=None,
+        message=scan.error_message,
+        error_message=scan.error_message,
+        details={},
         started_at=scan.started_at,
         finished_at=scan.finished_at,
     )
@@ -259,6 +313,8 @@ async def scan_status(
 @limiter.limit("20/minute")
 async def list_scans(
     request: Request,
+    limit: int = 50,
+    offset: int = 0,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission(Permission.SCAN_READ)),
 ):
@@ -266,6 +322,8 @@ async def list_scans(
         select(Scan)
         .where(Scan.user_id == current_user.id)
         .order_by(Scan.queued_at.desc())
+        .offset(max(offset, 0))
+        .limit(min(max(limit, 1), 100))
     )
     scans = scans_result.scalars().all()
 
@@ -287,6 +345,88 @@ async def list_scans(
             finished_at=s.finished_at,
         ))
     return items
+
+
+@router.post("/scans/{scan_id}/cancel", response_model=ScanStatusResponse)
+async def cancel_scan(
+    scan_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.SCAN_UPDATE)),
+):
+    result = await db.execute(select(Scan).where(Scan.id == scan_id, Scan.user_id == current_user.id))
+    scan = result.scalar_one_or_none()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if scan.status not in {ScanStatus.QUEUED.value, ScanStatus.IN_PROGRESS.value}:
+        raise HTTPException(status_code=400, detail="Only queued or running scans can be canceled")
+    scan.status = ScanStatus.CANCELED.value
+    scan.error_message = "Canceled by user"
+    await db.commit()
+    await cache.set("scan_progress", str(scan.id), {"scan_id": str(scan.id), "status": scan.status, "progress": scan.progress, "stage": "canceled", "message": "Scan canceled", "error_message": scan.error_message, "details": {}})
+    return ScanStatusResponse(scan_id=scan.id, status=scan.status, progress=scan.progress, stage="canceled", message="Scan canceled", error_message=scan.error_message)
+
+
+@router.post("/scans/{scan_id}/retry", response_model=ScanUploadResponse)
+async def retry_scan(
+    scan_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.SCAN_CREATE)),
+):
+    result = await db.execute(select(Scan).where(Scan.id == scan_id, Scan.user_id == current_user.id))
+    original = result.scalar_one_or_none()
+    if not original:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    scan = Scan(
+        type=original.type,
+        target=original.target,
+        status=ScanStatus.QUEUED.value,
+        user_id=current_user.id,
+        organization_id=original.organization_id,
+        project_id=original.project_id,
+        github_org=original.github_org,
+        github_repo=original.github_repo,
+        github_branch=original.github_branch,
+        github_folder=original.github_folder,
+    )
+    db.add(scan)
+    await db.commit()
+    await db.refresh(scan)
+
+    if scan.type == ScanType.URL.value:
+        from app.celery_app import run_url_scan_task
+        run_url_scan_task.delay(str(scan.id), scan.target)
+    elif scan.type == ScanType.GITHUB.value:
+        from app.celery_app import run_github_scan_task
+        run_github_scan_task.delay(str(scan.id), str(current_user.id), scan.github_org or "", scan.github_repo or "", scan.github_branch or "main", scan.github_folder or "")
+    else:
+        file_result = await db.execute(select(ScanFile).where(ScanFile.scan_id == original.id).limit(1))
+        scan_file = file_result.scalar_one_or_none()
+        if not scan_file:
+            raise HTTPException(status_code=400, detail="Original uploaded file is no longer available")
+        from app.celery_app import run_file_scan_task
+        run_file_scan_task.delay(str(scan.id), scan_file.path)
+
+    return ScanUploadResponse(scan_id=scan.id, status=scan.status)
+
+
+@router.delete("/scans/{scan_id}")
+async def delete_scan(
+    scan_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.SCAN_DELETE)),
+):
+    result = await db.execute(select(Scan).where(Scan.id == scan_id, Scan.user_id == current_user.id))
+    scan = result.scalar_one_or_none()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    await db.delete(scan)
+    await db.commit()
+    cleanup_scan_dir(scan_id)
+    return {"message": "Scan deleted"}
 
 
 @router.get("/scan-result/{scan_id}", response_model=ScanResultResponse)
@@ -320,6 +460,15 @@ async def scan_result(
             file_path=v.file_path,
             line_number=v.line_number,
             remediation=v.remediation,
+            cvss_score=v.cvss_score,
+            cwe_ids=v.cwe_ids,
+            owasp_category=v.owasp_category,
+            nist_control=v.nist_control,
+            mitre_technique=v.mitre_technique,
+            known_exploit=v.known_exploit,
+            references=v.references,
+            status=v.status,
+            assigned_to_id=v.assigned_to_id,
         )
         for v in vulns
     ]

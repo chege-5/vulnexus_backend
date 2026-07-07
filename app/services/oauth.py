@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import secrets
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import create_access_token, hash_password
+from app.core.http_client import create_async_client, request_with_retry
 from app.config import settings
 from app.models.db_models import GitHubConnection, OAuthAccount, User
 from app.utils.crypto import decrypt_token, encrypt_token
@@ -36,11 +37,9 @@ def build_google_auth_url(state: str, redirect_uri: Optional[str] = None) -> str
 
 
 async def verify_google_token(id_token: str) -> dict:
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.get(
-            f"https://oauth2.googleapis.com/tokeninfo?id_token={id_token}"
-        )
-        if response.status_code != 200:
+    async with create_async_client(timeout=15) as client:
+        response = await request_with_retry(client, "GET", f"https://oauth2.googleapis.com/tokeninfo?id_token={id_token}")
+        if response is None or response.status_code != 200:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid Google token",
@@ -69,8 +68,13 @@ async def verify_google_token(id_token: str) -> dict:
 
 
 async def exchange_google_code(code: str, redirect_uri: Optional[str] = None) -> dict:
-    async with httpx.AsyncClient(timeout=20) as client:
-        token_response = await client.post(
+    if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=501, detail="Google OAuth is not configured")
+
+    async with create_async_client(timeout=20) as client:
+        token_response = await request_with_retry(
+            client,
+            "POST",
             "https://oauth2.googleapis.com/token",
             data={
                 "client_id": settings.GOOGLE_CLIENT_ID,
@@ -81,7 +85,7 @@ async def exchange_google_code(code: str, redirect_uri: Optional[str] = None) ->
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
-        if token_response.status_code != 200:
+        if token_response is None or token_response.status_code != 200:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Failed to exchange Google code",
@@ -117,8 +121,13 @@ def build_github_auth_url(state: str, redirect_uri: Optional[str] = None) -> str
 
 
 async def exchange_github_code(code: str, redirect_uri: Optional[str] = None) -> dict:
-    async with httpx.AsyncClient(timeout=20) as client:
-        token_response = await client.post(
+    if not settings.GITHUB_CLIENT_ID or not settings.GITHUB_CLIENT_SECRET:
+        raise HTTPException(status_code=501, detail="GitHub OAuth is not configured")
+
+    async with create_async_client(timeout=20) as client:
+        token_response = await request_with_retry(
+            client,
+            "POST",
             "https://github.com/login/oauth/access_token",
             data={
                 "client_id": settings.GITHUB_CLIENT_ID,
@@ -128,7 +137,7 @@ async def exchange_github_code(code: str, redirect_uri: Optional[str] = None) ->
             },
             headers={"Accept": "application/json"},
         )
-        if token_response.status_code != 200:
+        if token_response is None or token_response.status_code != 200:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Failed to exchange GitHub code",
@@ -142,11 +151,8 @@ async def exchange_github_code(code: str, redirect_uri: Optional[str] = None) ->
                 detail="No access token returned from GitHub",
             )
 
-        user_response = await client.get(
-            "https://api.github.com/user",
-            headers=_github_headers(access_token),
-        )
-        if user_response.status_code != 200:
+        user_response = await request_with_retry(client, "GET", "https://api.github.com/user", headers=_github_headers(access_token))
+        if user_response is None or user_response.status_code != 200:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Failed to get GitHub user info",
@@ -168,19 +174,18 @@ async def exchange_github_code(code: str, redirect_uri: Optional[str] = None) ->
 
 
 async def fetch_github_metadata(access_token: str, github_username: str) -> dict:
-    async with httpx.AsyncClient(timeout=20) as client:
-        org_response = await client.get(
-            "https://api.github.com/user/orgs",
-            headers=_github_headers(access_token),
-        )
-        repos_response = await client.get(
+    async with create_async_client(timeout=20) as client:
+        org_response = await request_with_retry(client, "GET", "https://api.github.com/user/orgs", headers=_github_headers(access_token))
+        repos_response = await request_with_retry(
+            client,
+            "GET",
             "https://api.github.com/user/repos",
             params={"per_page": 100, "sort": "updated"},
             headers=_github_headers(access_token),
         )
 
     organizations: list[dict] = []
-    if org_response.status_code == 200:
+    if org_response is not None and org_response.status_code == 200:
         for org in org_response.json():
             organizations.append({
                 "login": org.get("login"),
@@ -191,7 +196,7 @@ async def fetch_github_metadata(access_token: str, github_username: str) -> dict
 
     repositories: list[dict] = []
     permissions: dict[str, bool] = {}
-    if repos_response.status_code == 200:
+    if repos_response is not None and repos_response.status_code == 200:
         for repo in repos_response.json():
             repo_permissions = repo.get("permissions") or {}
             permissions = _merge_permissions(permissions, repo_permissions)
@@ -216,13 +221,15 @@ async def fetch_github_metadata(access_token: str, github_username: str) -> dict
 
 
 async def list_github_branches(access_token: str, owner: str, repo: str) -> list[str]:
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.get(
+    async with create_async_client(timeout=20) as client:
+        response = await request_with_retry(
+            client,
+            "GET",
             f"https://api.github.com/repos/{owner}/{repo}/branches",
             params={"per_page": 100},
             headers=_github_headers(access_token),
         )
-        if response.status_code != 200:
+        if response is None or response.status_code != 200:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Unable to fetch repository branches",
@@ -259,8 +266,8 @@ async def oauth_login_or_register(
             raise HTTPException(status_code=409, detail="This provider account is already linked to another user")
 
         oauth_account.access_token = access_token or oauth_account.access_token
-        oauth_account.expires_at = datetime.utcnow() + timedelta(days=365)
-        user.last_login = datetime.utcnow()
+        oauth_account.expires_at = datetime.now(timezone.utc) + timedelta(days=365)
+        user.last_login = datetime.now(timezone.utc)
         user.avatar_url = avatar_url or user.avatar_url
         if provider == "github" and access_token and github_username:
             await _upsert_github_connection(db, user.id, github_user_id=provider_user_id, github_username=github_username, access_token=access_token, metadata=metadata)
@@ -270,7 +277,7 @@ async def oauth_login_or_register(
 
     target_user = current_user
     if target_user is None:
-        email_result = await db.execute(select(User).where(User.email == email))
+        email_result = await db.execute(select(User).where(User.email == email.lower()))
         target_user = email_result.scalar_one_or_none()
 
     if target_user:
@@ -287,15 +294,15 @@ async def oauth_login_or_register(
                 provider=provider,
                 provider_user_id=provider_user_id,
                 access_token=access_token,
-                expires_at=datetime.utcnow() + timedelta(days=365),
+                expires_at=datetime.now(timezone.utc) + timedelta(days=365),
             ))
         else:
             existing_link.provider_user_id = provider_user_id
             existing_link.access_token = access_token or existing_link.access_token
-            existing_link.expires_at = datetime.utcnow() + timedelta(days=365)
+            existing_link.expires_at = datetime.now(timezone.utc) + timedelta(days=365)
 
         target_user.avatar_url = avatar_url or target_user.avatar_url
-        target_user.last_login = datetime.utcnow()
+        target_user.last_login = datetime.now(timezone.utc)
         if provider == "github" and access_token and github_username:
             await _upsert_github_connection(db, target_user.id, github_user_id=provider_user_id, github_username=github_username, access_token=access_token, metadata=metadata)
 
@@ -303,7 +310,7 @@ async def oauth_login_or_register(
         return target_user, create_access_token({"sub": str(target_user.id)})
 
     user = User(
-        email=email,
+        email=email.lower(),
         name=name,
         avatar_url=avatar_url,
         auth_provider=provider,
@@ -311,7 +318,7 @@ async def oauth_login_or_register(
         role="developer",
         is_approved=True,
         scan_limit=10,
-        last_login=datetime.utcnow(),
+        last_login=datetime.now(timezone.utc),
     )
     db.add(user)
     await db.flush()
@@ -321,7 +328,7 @@ async def oauth_login_or_register(
         provider=provider,
         provider_user_id=provider_user_id,
         access_token=access_token,
-        expires_at=datetime.utcnow() + timedelta(days=365),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=365),
     ))
 
     if provider == "github" and access_token and github_username:
@@ -351,7 +358,7 @@ async def _upsert_github_connection(
         connection.github_username = github_username
         connection.access_token = encrypted_token
         connection.token_encrypted = True
-        connection.last_synced_at = datetime.utcnow()
+        connection.last_synced_at = datetime.now(timezone.utc)
         connection.is_connected = True
         if organizations is not None:
             connection.organizations = organizations
@@ -364,8 +371,8 @@ async def _upsert_github_connection(
             github_username=github_username,
             access_token=encrypted_token,
             token_encrypted=True,
-            connected_at=datetime.utcnow(),
-            last_synced_at=datetime.utcnow(),
+            connected_at=datetime.now(timezone.utc),
+            last_synced_at=datetime.now(timezone.utc),
             is_connected=True,
             organizations=organizations,
             repositories=repositories,
@@ -420,7 +427,7 @@ async def sync_github_connection_metadata(db: AsyncSession, user_id: uuid.UUID) 
     metadata = await fetch_github_metadata(access_token, connection.github_username)
     connection.organizations = metadata["organizations"]
     connection.repositories = metadata["repositories"]
-    connection.last_synced_at = datetime.utcnow()
+    connection.last_synced_at = datetime.now(timezone.utc)
     connection.is_connected = True
     await db.commit()
 
@@ -433,7 +440,7 @@ async def disconnect_github_connection(db: AsyncSession, user_id: uuid.UUID) -> 
     if not connection:
         raise HTTPException(status_code=404, detail="GitHub account is not connected")
     connection.is_connected = False
-    connection.last_synced_at = datetime.utcnow()
+    connection.last_synced_at = datetime.now(timezone.utc)
     await db.commit()
 
 

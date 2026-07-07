@@ -28,10 +28,12 @@ def validate_upload(file: UploadFile) -> bool:
 
 
 async def save_upload(file: UploadFile, scan_id: uuid.UUID) -> str:
-    scan_dir = os.path.join(settings.UPLOAD_DIR, str(scan_id))
-    os.makedirs(scan_dir, exist_ok=True)
+    scan_dir = Path(settings.UPLOAD_DIR).resolve() / str(scan_id)
+    scan_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(file.filename).name if file.filename else "upload"
-    dest = os.path.join(scan_dir, safe_name)
+    dest = (scan_dir / safe_name).resolve()
+    if scan_dir not in dest.parents and dest != scan_dir:
+        raise ValueError("Invalid upload path")
     size = 0
     with open(dest, "wb") as f:
         while chunk := await file.read(8192):
@@ -40,7 +42,7 @@ async def save_upload(file: UploadFile, scan_id: uuid.UUID) -> str:
                 os.remove(dest)
                 raise ValueError(f"File exceeds {settings.MAX_UPLOAD_SIZE_MB}MB limit")
             f.write(chunk)
-    return dest
+    return str(dest)
 
 
 def extract_zip(zip_path: str, dest_dir: str) -> list[str]:
@@ -71,11 +73,17 @@ def extract_zip(zip_path: str, dest_dir: str) -> list[str]:
             safe = _sanitize_zip_path(info.filename)
             if safe is None:
                 continue
-            target = os.path.join(dest_dir, safe)
+            if Path(safe).suffix.lower() not in ALLOWED_EXTENSIONS or Path(safe).suffix.lower() == ".zip":
+                continue
+            dest_root = Path(dest_dir).resolve()
+            target = (dest_root / safe).resolve()
+            if dest_root not in target.parents:
+                logger.warning(f"Skipping suspicious zip member outside destination: {info.filename}")
+                continue
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with zf.open(info) as src, open(target, "wb") as dst:
                 shutil.copyfileobj(src, dst)
-            extracted.append(target)
+            extracted.append(str(target))
     return extracted
 
 
