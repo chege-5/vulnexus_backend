@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import httpx
-
+from app.core.http_client import create_async_client, request_with_retry
 from app.config import settings
 from app.services.models.pipeline import ScanContext, ScanTarget
 from app.services.scanners.base import ScannerResult, TargetScanner
@@ -13,8 +12,10 @@ class HeaderScanner(TargetScanner):
 
     async def scan(self, target: ScanTarget, context: ScanContext) -> ScannerResult:
         findings = []
-        async with httpx.AsyncClient(timeout=settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS, follow_redirects=True, verify=settings.VERIFY_SCAN_TARGETS) as client:
-            response = await client.get(target.value)
+        async with create_async_client(timeout=settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS) as client:
+            response = await request_with_retry(client, "GET", target.value)
+        if response is None:
+            return ScannerResult(metadata={"error": "Unable to fetch response headers"})
         header_map = {key.lower(): value for key, value in response.headers.items()}
         for header, finding_type, title, severity in [
             ("content-security-policy", "header", "Missing Content Security Policy", "Low"),

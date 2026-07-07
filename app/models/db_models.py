@@ -1,6 +1,6 @@
 import enum
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     Boolean,
@@ -19,6 +19,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class ScanType(str, enum.Enum):
     FILE = "file"
     URL = "url"
@@ -30,6 +34,7 @@ class ScanStatus(str, enum.Enum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELED = "canceled"
 
 
 class Severity(str, enum.Enum):
@@ -89,8 +94,8 @@ class User(Base):
     security_focus: Mapped[str] = mapped_column(String(255), default="")
     subscription_tier: Mapped[str] = mapped_column(String(64), default="free")
     subscription_status: Mapped[str] = mapped_column(String(64), default="active")
-    subscription_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    subscription_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     scan_limit: Mapped[int] = mapped_column(Integer, default=10)
     is_approved: Mapped[bool] = mapped_column(Boolean, default=True)
     pending_approval: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -99,13 +104,63 @@ class User(Base):
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     auth_provider: Mapped[str] = mapped_column(String(32), default="email")
     refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
-    last_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    password_reset_token_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password_reset_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     scans: Mapped[list["Scan"]] = relationship(back_populates="user")
     notifications: Mapped[list["Notification"]] = relationship(back_populates="user")
     oauth_accounts: Mapped[list["OAuthAccount"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     connected_github: Mapped[list["GitHubConnection"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    organization_memberships: Mapped[list["OrganizationMember"]] = relationship(back_populates="user", cascade="all, delete-orphan", foreign_keys="OrganizationMember.user_id")
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    owner: Mapped["User | None"] = relationship(foreign_keys=[owner_id])
+    members: Mapped[list["OrganizationMember"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+    projects: Mapped[list["Project"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+
+
+class OrganizationMember(Base):
+    __tablename__ = "organization_members"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), index=True)
+    role: Mapped[str] = mapped_column(String(32), default=UserRole.DEVELOPER.value)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    organization: Mapped["Organization"] = relationship(back_populates="members")
+    user: Mapped["User"] = relationship(back_populates="organization_memberships", foreign_keys=[user_id])
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "user_id", name="uq_org_member"),
+    )
+
+
+class Project(Base):
+    __tablename__ = "projects"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True, nullable=True)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), index=True, nullable=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    organization: Mapped["Organization | None"] = relationship(back_populates="projects")
+    owner: Mapped["User | None"] = relationship(foreign_keys=[owner_id])
+    scans: Mapped[list["Scan"]] = relationship(back_populates="project")
 
 
 class OAuthAccount(Base):
@@ -117,8 +172,8 @@ class OAuthAccount(Base):
     provider_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
     access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     user: Mapped["User"] = relationship(back_populates="oauth_accounts")
 
@@ -136,8 +191,8 @@ class GitHubConnection(Base):
     github_username: Mapped[str] = mapped_column(String(255), nullable=False)
     access_token: Mapped[str] = mapped_column(Text, nullable=False)
     token_encrypted: Mapped[bool] = mapped_column(Boolean, default=True)
-    connected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_connected: Mapped[bool] = mapped_column(Boolean, default=True)
     organizations: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     repositories: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -152,11 +207,13 @@ class Scan(Base):
     type: Mapped[str] = mapped_column(String(32), nullable=False)
     target: Mapped[str] = mapped_column(String(1024), nullable=False)
     user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), index=True)
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True, nullable=True)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("projects.id"), index=True, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default=ScanStatus.QUEUED.value, index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
-    queued_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     overall_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     github_org: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -165,6 +222,8 @@ class Scan(Base):
     github_folder: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     user: Mapped["User | None"] = relationship(back_populates="scans")
+    organization: Mapped["Organization | None"] = relationship()
+    project: Mapped["Project | None"] = relationship(back_populates="scans")
     files: Mapped[list["ScanFile"]] = relationship(back_populates="scan", cascade="all, delete-orphan")
     vulnerabilities: Mapped[list["Vulnerability"]] = relationship(back_populates="scan", cascade="all, delete-orphan")
     ml_features: Mapped[list["MLFeature"]] = relationship(back_populates="scan", cascade="all, delete-orphan")
@@ -198,6 +257,7 @@ class Vulnerability(Base):
     code_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
     remediation: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default=FindingStatus.OPEN.value, index=True)
+    assigned_to_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), index=True, nullable=True)
     compliance_results: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     cwe_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
     owasp_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -205,9 +265,41 @@ class Vulnerability(Base):
     mitre_technique: Mapped[str | None] = mapped_column(String(128), nullable=True)
     known_exploit: Mapped[bool] = mapped_column(Boolean, default=False)
     references: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
 
     scan: Mapped["Scan"] = relationship(back_populates="vulnerabilities")
+    assigned_to: Mapped["User | None"] = relationship(foreign_keys=[assigned_to_id])
+    comments: Mapped[list["FindingComment"]] = relationship(back_populates="vulnerability", cascade="all, delete-orphan")
+    history: Mapped[list["FindingHistory"]] = relationship(back_populates="vulnerability", cascade="all, delete-orphan")
+
+
+class FindingComment(Base):
+    __tablename__ = "finding_comments"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vulnerability_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("vulnerabilities.id"), index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+
+    vulnerability: Mapped["Vulnerability"] = relationship(back_populates="comments")
+    user: Mapped["User | None"] = relationship()
+
+
+class FindingHistory(Base):
+    __tablename__ = "finding_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vulnerability_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("vulnerabilities.id"), index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    to_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+
+    vulnerability: Mapped["Vulnerability"] = relationship(back_populates="history")
+    user: Mapped["User | None"] = relationship()
 
 
 class CVEEntry(Base):
@@ -218,8 +310,8 @@ class CVEEntry(Base):
     cvss_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     cvss_vector: Mapped[str | None] = mapped_column(String(128), nullable=True)
     severity: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    published_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    last_modified: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    published_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_modified: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     affected_software: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     references: Mapped[list | None] = mapped_column(JSON, nullable=True)
     known_exploits: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -246,7 +338,7 @@ class Notification(Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), index=True, nullable=True)
     type: Mapped[str] = mapped_column(String(32), default="info")
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
 
     user: Mapped["User | None"] = relationship(back_populates="notifications")
 
@@ -269,7 +361,7 @@ class AuditLog(Base):
     resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
 
     user: Mapped["User | None"] = relationship()
 
@@ -284,4 +376,4 @@ class ComplianceCheck(Base):
     result: Mapped[str] = mapped_column(String(32), nullable=False)
     score: Mapped[float | None] = mapped_column(Float, nullable=True)
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

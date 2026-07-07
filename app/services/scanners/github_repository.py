@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.utils.logger import get_logger
 from app.services.github_repo_scanner import materialize_repository_source
 from app.services.models.pipeline import ScanContext, ScanTarget
 from app.services.scanners.base import ScannerResult, TargetScanner
@@ -9,6 +10,9 @@ from app.utils.crypto import decrypt_token
 from app import database
 from app.models.db_models import GitHubConnection
 from sqlalchemy import select
+
+
+logger = get_logger(__name__)
 
 
 class GitHubRepositoryScanner(TargetScanner):
@@ -53,7 +57,11 @@ class GitHubRepositoryScanner(TargetScanner):
 
         scan_root = Path(context.options.get("scan_root") or Path("uploads") / str(context.scan_id) / "repository")
         scan_root.mkdir(parents=True, exist_ok=True)
-        source_files = await materialize_repository_source(access_token, owner, repository, branch, str(scan_root), folder)
+        try:
+            source_files = await materialize_repository_source(access_token, owner, repository, branch, str(scan_root), folder)
+        except Exception as exc:
+            logger.warning("GitHub repository materialization failed for %s/%s@%s: %s", owner, repository, branch, exc)
+            return ScannerResult(metadata={"error": str(exc), "source_files": [], "scan_root": str(scan_root)})
         findings = [self._finding(
             finding_type="repository",
             title="Repository materialized",

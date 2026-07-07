@@ -1,7 +1,7 @@
 import asyncio
-import httpx
 from urllib.parse import urlparse
 from app.models.pydantic_models import CryptoFeatures, RuleVulnerability
+from app.core.http_client import create_async_client, request_with_retry
 from app.utils.tls_utils import get_tls_info, check_hsts, TLSInfo
 from app.config import settings
 from app.utils.logger import get_logger
@@ -40,7 +40,7 @@ async def scan_url(target_url: str) -> tuple[list[RuleVulnerability], CryptoFeat
     return vulns, features
 
 
-def _extract_features(tls_info: TLSInfo, has_hsts: bool) -> CryptoFeatures:
+def _extract_features(tls_info: TLSInfo, has_hsts: bool | None) -> CryptoFeatures:
     tls_ver = tls_info.tls_version
     return CryptoFeatures(
         tls_version=tls_ver,
@@ -53,7 +53,7 @@ def _extract_features(tls_info: TLSInfo, has_hsts: bool) -> CryptoFeatures:
     )
 
 
-def _analyze_tls(tls_info: TLSInfo, has_hsts: bool, url: str) -> list[RuleVulnerability]:
+def _analyze_tls(tls_info: TLSInfo, has_hsts: bool | None, url: str) -> list[RuleVulnerability]:
     vulns = []
     ver_num = TLS_VERSION_MAP.get(tls_info.tls_version, 0)
 
@@ -89,7 +89,7 @@ def _analyze_tls(tls_info: TLSInfo, has_hsts: bool, url: str) -> list[RuleVulner
             crypto_feature="no-pfs",
         ))
 
-    if not has_hsts:
+    if has_hsts is False:
         vulns.append(RuleVulnerability(
             rule_id="NO_HSTS",
             description=f"HSTS header missing on {url}",
@@ -114,48 +114,48 @@ async def _call_ssl_labs(hostname: str) -> list[RuleVulnerability]:
     try:
         url = f"{settings.SSL_LABS_API_URL}/analyze"
         params = {"host": hostname, "fromCache": "on", "all": "done"}
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(url, params=params)
-            if r.status_code == 200:
-                data = r.json()
-                endpoints = data.get("endpoints", [])
-                for ep in endpoints:
-                    grade = ep.get("grade", "")
-                    if grade and grade not in ("A+", "A", "A-"):
-                        vulns.append(RuleVulnerability(
-                            rule_id="SSL_LABS_GRADE",
-                            description=f"SSL Labs grade {grade} for {hostname}",
-                            severity="Medium" if grade.startswith("B") else "High",
-                            crypto_feature=f"ssl-grade-{grade}",
-                        ))
+        async with create_async_client(timeout=30) as client:
+            r = await request_with_retry(client, "GET", url, params=params)
+        if r is None:
+            return vulns
+        if r.status_code == 200:
+            data = r.json()
+            endpoints = data.get("endpoints", [])
+            for ep in endpoints:
+                grade = ep.get("grade", "")
+                if grade and grade not in ("A+", "A", "A-"):
+                    vulns.append(RuleVulnerability(
+                        rule_id="SSL_LABS_GRADE",
+                        description=f"SSL Labs grade {grade} for {hostname}",
+                        severity="Medium" if grade.startswith("B") else "High",
+                        crypto_feature=f"ssl-grade-{grade}",
+                    ))
     except Exception as e:
-        logger.warning(f"SSL Labs API call failed: {e}")
+        logger.warning("SSL Labs API call failed: %s", e)
     return vulns
 
 
 async def _check_security_headers(url: str) -> list[RuleVulnerability]:
     vulns = []
     try:
-        async with httpx.AsyncClient(
-            timeout=10,
-            follow_redirects=True,
-            verify=settings.VERIFY_SCAN_TARGETS,
-        ) as client:
-            r = await client.get(url)
-            headers_lower = {k.lower(): v for k, v in r.headers.items()}
+        async with create_async_client(timeout=10) as client:
+            r = await request_with_retry(client, "GET", url)
+        if r is None:
+            return vulns
+        headers_lower = {k.lower(): v for k, v in r.headers.items()}
 
-            checks = [
-                ("x-content-type-options", "MISSING_X_CONTENT_TYPE", "X-Content-Type-Options header missing"),
-                ("x-frame-options", "MISSING_X_FRAME_OPTIONS", "X-Frame-Options header missing"),
-                ("content-security-policy", "MISSING_CSP", "Content-Security-Policy header missing"),
-            ]
-            for header, rule_id, desc in checks:
-                if header not in headers_lower:
-                    vulns.append(RuleVulnerability(
-                        rule_id=rule_id,
-                        description=desc,
-                        severity="Low",
-                    ))
+        checks = [
+            ("x-content-type-options", "MISSING_X_CONTENT_TYPE", "X-Content-Type-Options header missing"),
+            ("x-frame-options", "MISSING_X_FRAME_OPTIONS", "X-Frame-Options header missing"),
+            ("content-security-policy", "MISSING_CSP", "Content-Security-Policy header missing"),
+        ]
+        for header, rule_id, desc in checks:
+            if header not in headers_lower:
+                vulns.append(RuleVulnerability(
+                    rule_id=rule_id,
+                    description=desc,
+                    severity="Low",
+                ))
     except Exception as e:
-        logger.warning(f"Security headers check failed: {e}")
+        logger.warning("Security headers check failed: %s", e)
     return vulns

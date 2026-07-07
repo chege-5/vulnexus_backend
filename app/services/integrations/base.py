@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from app.core.http_client import create_async_client
 from app.config import settings
 from app.services.integrations.cache import cache
 from app.services.models.pipeline import IntelligenceResult, ProviderResponse
@@ -71,7 +72,7 @@ class ProviderAdapter(ABC):
         headers = {"User-Agent": "Vulnexus/1.0"}
         if self.settings.api_key:
             headers.update(self._auth_headers())
-        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+        async with create_async_client(timeout=timeout, headers=headers) as client:
             response = await self._with_retry(client, query, context=context, limit=limit)
         if response.success:
             await cache.set_json(

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.deps import get_db
 from app.auth import require_role
 from app.models.db_models import User, Scan, Vulnerability, Notification, ScanStatus, Severity
+from app.services.integrations import integration_manager
+from app.services.rbac import log_audit_event
 
 router = APIRouter()
 admin_dependency = Depends(require_role("admin"))
@@ -67,7 +69,7 @@ async def list_users(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/admin/users/{user_id}/approve", dependencies=[admin_dependency])
-async def approve_user(user_id: str, body: UserApprovalRequest, db: AsyncSession = Depends(get_db)):
+async def approve_user(user_id: str, body: UserApprovalRequest, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
     user = result.scalar_one_or_none()
     if not user:
@@ -80,12 +82,13 @@ async def approve_user(user_id: str, body: UserApprovalRequest, db: AsyncSession
         message=f"Your account status has been updated. Approved: {body.is_approved}",
         type="info" if body.is_approved else "critical",
     ))
+    await log_audit_event(db, None, "admin.user.approve", "user", user_id, {"is_approved": body.is_approved}, request.client.host if request.client else None)
     await db.commit()
     return {"message": f"User approval status updated to {body.is_approved}"}
 
 
 @router.post("/admin/users/{user_id}/limit", dependencies=[admin_dependency])
-async def update_user_limit(user_id: str, body: UserLimitRequest, db: AsyncSession = Depends(get_db)):
+async def update_user_limit(user_id: str, body: UserLimitRequest, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
     user = result.scalar_one_or_none()
     if not user:
@@ -98,12 +101,13 @@ async def update_user_limit(user_id: str, body: UserLimitRequest, db: AsyncSessi
         message=f"Your scan limit has been updated to {body.scan_limit} scans.",
         type="info",
     ))
+    await log_audit_event(db, None, "admin.user.limit", "user", user_id, {"scan_limit": body.scan_limit}, request.client.host if request.client else None)
     await db.commit()
     return {"message": f"User scan limit updated to {body.scan_limit}"}
 
 
 @router.post("/admin/users/{user_id}/subscription", dependencies=[admin_dependency])
-async def update_user_subscription(user_id: str, body: UserSubscriptionRequest, db: AsyncSession = Depends(get_db)):
+async def update_user_subscription(user_id: str, body: UserSubscriptionRequest, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
     user = result.scalar_one_or_none()
     if not user:
@@ -117,12 +121,13 @@ async def update_user_subscription(user_id: str, body: UserSubscriptionRequest, 
         message=f"Your subscription tier is now {body.subscription_tier.upper()} ({body.subscription_status}).",
         type="info",
     ))
+    await log_audit_event(db, None, "admin.user.subscription", "user", user_id, body.model_dump(), request.client.host if request.client else None)
     await db.commit()
     return {"message": "User subscription updated successfully"}
 
 
 @router.post("/admin/communicate", dependencies=[admin_dependency])
-async def send_communication(body: CommunicationRequest, db: AsyncSession = Depends(get_db)):
+async def send_communication(body: CommunicationRequest, request: Request, db: AsyncSession = Depends(get_db)):
     notif = Notification(
         user_id=uuid.UUID(body.user_id) if body.user_id else None,
         title=body.title,
@@ -130,6 +135,7 @@ async def send_communication(body: CommunicationRequest, db: AsyncSession = Depe
         type=body.type,
     )
     db.add(notif)
+    await log_audit_event(db, None, "admin.communicate", "notification", body.user_id, {"title": body.title, "type": body.type, "send_email": body.send_email}, request.client.host if request.client else None)
     await db.commit()
 
     if body.user_id:
@@ -188,9 +194,9 @@ async def get_admin_analytics(db: AsyncSession = Depends(get_db)):
 
     scan_trend = []
     for i in range(6, -1, -1):
-        day = datetime.utcnow() - timedelta(days=i)
+        day = datetime.now(timezone.utc) - timedelta(days=i)
         day_str = day.strftime("%a")
-        start_of_day = datetime(day.year, day.month, day.day)
+        start_of_day = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
         end_of_day = start_of_day + timedelta(days=1)
 
         scans_count = await db.scalar(
@@ -222,3 +228,20 @@ async def get_admin_analytics(db: AsyncSession = Depends(get_db)):
         "recent_scans": recent_scans,
         "scan_trend": scan_trend,
     }
+
+
+@router.get("/admin/providers/health", dependencies=[admin_dependency])
+async def provider_health():
+    health = await integration_manager.health_check_all()
+    return [
+        {
+            "provider": item.provider,
+            "enabled": item.enabled,
+            "healthy": item.healthy,
+            "message": item.message,
+            "endpoint": item.endpoint,
+            "checked_at": item.checked_at.isoformat(),
+            "details": item.details,
+        }
+        for item in health.values()
+    ]

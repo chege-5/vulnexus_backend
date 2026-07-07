@@ -12,7 +12,7 @@ from app.rate_limit import limiter
 from app.models.db_models import Scan, ScanStatus, User, Vulnerability, CVEEntry, ComplianceCheck
 from app.models.pydantic_models import ReportListItem
 from app.config import settings
-from app.services.report_generator import build_report, generate_html_report, build_report_payload
+from app.services.report_generator import build_report, generate_html_report, build_report_payload, export_report_document, generate_pdf_report
 from app.services.rbac import Permission, require_permission
 from app.services.audit_engine import build_ai_insight, derive_final_audit_verdict
 from app.utils.logger import get_logger
@@ -43,7 +43,7 @@ async def list_reports(
         html_path = os.path.join(reports_dir, f"{scan_id}.html")
         has_report = os.path.exists(pdf_path) or os.path.exists(html_path)
         finished = scan.finished_at.strftime("%Y-%m-%d") if scan.finished_at else "—"
-        scan_label = "URL Scan" if scan.type == "url" else "File Scan"
+        scan_label = {"url": "URL Scan", "file": "File Scan", "github": "GitHub Repository Scan"}.get(scan.type, "Security Scan")
         items.append(ReportListItem(
             id=scan.id,
             name=f"Security Report — {scan.target}",
@@ -165,6 +165,13 @@ async def download_report(
     report_format = (format or "pdf").lower()
     if report_format == "json":
         return JSONResponse(payload)
+    if report_format in {"md", "csv", "docx"}:
+        reports_dir = os.path.join(settings.UPLOAD_DIR, "reports")
+        os.makedirs(reports_dir, exist_ok=True)
+        output_path = os.path.join(reports_dir, f"{scan_id}.{report_format}")
+        export_report_document(payload, output_path, report_format)
+        media_type = {"md": "text/markdown", "csv": "text/csv", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}[report_format]
+        return FileResponse(output_path, media_type=media_type, filename=f"vulnexus_report_{scan_id}.{report_format}")
 
     reports_dir = os.path.join(settings.UPLOAD_DIR, "reports")
     pdf_path = os.path.join(reports_dir, f"{scan_id}.pdf")
@@ -223,3 +230,28 @@ async def download_report(
         return FileResponse(pdf_generated, media_type="text/html", filename=f"vulnexus_report_{scan_id}.html")
     return FileResponse(pdf_generated, media_type="application/pdf", filename=f"vulnexus_report_{scan_id}.pdf")
     raise HTTPException(status_code=404, detail="Report not found")
+
+
+@router.delete("/report/{scan_id}")
+@limiter.limit("10/minute")
+async def delete_report(
+    scan_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.REPORT_DELETE)),
+):
+    result = await db.execute(select(Scan).where(Scan.id == scan_id))
+    scan = result.scalar_one_or_none()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if scan.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    reports_dir = os.path.join(settings.UPLOAD_DIR, "reports")
+    deleted = []
+    for ext in ("pdf", "html", "json", "md", "csv", "docx"):
+        path = os.path.join(reports_dir, f"{scan_id}.{ext}")
+        if os.path.exists(path):
+            os.remove(path)
+            deleted.append(ext)
+    return {"message": "Report artifacts deleted", "deleted": deleted}

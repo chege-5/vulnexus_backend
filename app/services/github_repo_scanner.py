@@ -5,9 +5,7 @@ import base64
 from pathlib import Path
 from typing import Optional
 
-import httpx
-
-from app.config import settings
+from app.core.http_client import create_async_client, request_with_retry
 from app.utils.file_utils import ALLOWED_EXTENSIONS
 from app.utils.logger import get_logger
 
@@ -27,13 +25,15 @@ async def materialize_repository_source(
     saved_files: list[str] = []
     headers = _github_headers(access_token)
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        tree_response = await client.get(
+    async with create_async_client(timeout=30) as client:
+        tree_response = await request_with_retry(
+            client,
+            "GET",
             f"https://api.github.com/repos/{owner}/{repository}/git/trees/{branch}",
             params={"recursive": 1},
             headers=headers,
         )
-        if tree_response.status_code != 200:
+        if tree_response is None or tree_response.status_code != 200:
             raise ValueError("Unable to list repository tree from GitHub")
 
         tree_data = tree_response.json()
@@ -78,12 +78,16 @@ async def materialize_repository_source(
 async def fetch_repository_metadata(access_token: str, owner: str, repository: str, branch: str) -> dict:
     """Fetch repository metadata for scan context and UI display."""
     headers = _github_headers(access_token)
-    async with httpx.AsyncClient(timeout=20) as client:
-        repo_response = await client.get(
+    async with create_async_client(timeout=20) as client:
+        repo_response = await request_with_retry(
+            client,
+            "GET",
             f"https://api.github.com/repos/{owner}/{repository}",
             headers=headers,
         )
-        branches_response = await client.get(
+        branches_response = await request_with_retry(
+            client,
+            "GET",
             f"https://api.github.com/repos/{owner}/{repository}/branches",
             params={"per_page": 100},
             headers=headers,
@@ -115,12 +119,14 @@ async def _download_file_content(
     branch: str,
     headers: dict[str, str],
 ) -> Optional[str]:
-    response = await client.get(
+    response = await request_with_retry(
+        client,
+        "GET",
         f"https://api.github.com/repos/{owner}/{repository}/contents/{path}",
         params={"ref": branch},
         headers=headers,
     )
-    if response.status_code != 200:
+    if response is None or response.status_code != 200:
         return None
 
     payload = response.json()

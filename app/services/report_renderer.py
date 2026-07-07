@@ -74,7 +74,6 @@ class PlaywrightChromiumRenderer:
                         "bottom": options.margin_bottom,
                         "left": options.margin_left,
                     },
-                    timeout=settings.REPORT_PDF_TIMEOUT_SECONDS * 1000,
                 )
                 logger.info("Generated PDF report via Playwright Chromium: %s", output_path)
                 return output_path

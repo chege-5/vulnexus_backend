@@ -1,9 +1,13 @@
 import asyncio
+import csv
+import json
 import os
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
+from xml.sax.saxutils import escape
+from zipfile import ZIP_DEFLATED, ZipFile
 from jinja2 import Template
 from app.config import settings
 from app.services.report_renderer import get_report_renderer
@@ -253,7 +257,7 @@ footer {
     <table>
         <thead>
             <tr>
-                <th>#</th><th>Severity</th><th>Rule ID</th><th>Description</th><th>Score</th><th>CVE / CVSS</th><th>Location</th>
+                <th>#</th><th>Severity</th><th>Rule ID</th><th>Description</th><th>Score</th><th>Attack Story</th><th>CVE / CVSS</th><th>Location</th>
             </tr>
         </thead>
         <tbody>
@@ -264,6 +268,7 @@ footer {
                 <td>{{ v.rule_id or 'N/A' }}</td>
                 <td>{{ v.description }}</td>
                 <td>{{ v.ml_score if v.ml_score is not none else 'N/A' }}</td>
+                <td>{{ v.attack_story or (v.knowledge.attack.attack_story if v.knowledge and v.knowledge.attack and v.knowledge.attack.attack_story else 'N/A') }}</td>
                 <td>{{ v.cve_id or 'N/A' }}</td>
                 <td>{{ v.file_path or 'N/A' }}{% if v.line_number %}:{{ v.line_number }}{% endif %}</td>
             </tr>
@@ -274,6 +279,22 @@ footer {
     <p>No vulnerabilities detected.</p>
     {% endif %}
 </section>
+
+{% if ai_insight or vulnerabilities %}
+<section class="section">
+    <h2>Threat Intelligence and Attack Story</h2>
+    <div class="finding">
+        <h3>Operational Narrative</h3>
+        <p>{{ ai_insight.summary if ai_insight and ai_insight.summary else 'No narrative available.' }}</p>
+    </div>
+    {% for v in vulnerabilities[:5] %}
+    <div class="finding">
+        <h3>{{ v.rule_id or 'Finding' }}</h3>
+        <p>{{ v.attack_story or (v.knowledge.attack.attack_story if v.knowledge and v.knowledge.attack and v.knowledge.attack.attack_story else v.description) }}</p>
+    </div>
+    {% endfor %}
+</section>
+{% endif %}
 
 <section class="section">
     <h2>Compliance Mapping</h2>
@@ -432,7 +453,7 @@ def generate_html_report(
         scan_id=scan_id,
         target=target,
         scan_type=scan_type,
-        generated_at=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         started_at=started_at,
         finished_at=finished_at,
         overall_score=round(overall_score, 1),
@@ -502,7 +523,7 @@ def build_report_payload(
         "report_id": str(scan_id),
         "target": target,
         "scan_type": scan_type,
-        "generated_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "started_at": str(started_at) if started_at else None,
         "finished_at": str(finished_at) if finished_at else None,
         "overall_score": round(overall_score, 1),
@@ -589,3 +610,132 @@ def build_report(
 
     pdf_path = os.path.join(reports_dir, f"{scan_id}.pdf")
     return generate_pdf_report(html, pdf_path)
+
+
+def generate_markdown_report(payload: dict) -> str:
+    lines = [
+        f"# VulNexus Security Report - {payload.get('target', 'Unknown Target')}",
+        "",
+        f"**Overall Risk:** {payload.get('overall_score', 0)} / 100",
+        f"**Verdict:** {payload.get('overall_verdict', 'Low')}",
+        f"**Generated:** {payload.get('generated_at', 'N/A')}",
+        "",
+        "## Executive Summary",
+        payload.get("ai_insight", {}).get("summary", "No executive summary available."),
+        "",
+        "## Risk Distribution",
+        json.dumps(payload.get("severity_counts", {}), indent=2),
+        "",
+        "## Findings",
+    ]
+    for finding in payload.get("vulnerabilities", []):
+        lines.extend([
+            f"### {finding.get('rule_id') or 'Finding'}",
+            f"Severity: {finding.get('severity', 'Unknown')}",
+            f"Description: {finding.get('description', '')}",
+            f"Risk: {finding.get('ml_score', 'N/A')}",
+            f"Attack Story: {finding.get('attack_story') or finding.get('knowledge', {}).get('attack', {}).get('attack_story', 'N/A')}",
+            f"Mitigation: {finding.get('remediation') or 'Review and remediate.'}",
+            "",
+        ])
+    lines.extend([
+        "## Recommendations",
+        *[f"- {item}" for item in payload.get("recommendations", [])],
+        "",
+        "## References",
+    ])
+    references = []
+    for finding in payload.get("vulnerabilities", []):
+        for reference in finding.get("references") or []:
+            if reference and reference not in references:
+                references.append(reference)
+    lines.extend(f"- {reference}" for reference in references[:50])
+    return "\n".join(lines).strip() + "\n"
+
+
+def generate_csv_report(payload: dict, output_path: str) -> str:
+    with open(output_path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["rule_id", "severity", "description", "risk_score", "cve_id", "cvss_score", "remediation", "file_path", "line_number"])
+        for finding in payload.get("vulnerabilities", []):
+            writer.writerow([
+                finding.get("rule_id"),
+                finding.get("severity"),
+                finding.get("description"),
+                finding.get("ml_score"),
+                finding.get("cve_id"),
+                finding.get("cvss_score"),
+                finding.get("remediation"),
+                finding.get("file_path"),
+                finding.get("line_number"),
+            ])
+    return output_path
+
+
+def generate_docx_report(payload: dict, output_path: str) -> str:
+    document_xml = _build_docx_document_xml(payload)
+    with ZipFile(output_path, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", _docx_content_types())
+        archive.writestr("_rels/.rels", _docx_root_rels())
+        archive.writestr("word/document.xml", document_xml)
+    return output_path
+
+
+def generate_report_markdown_document(payload: dict) -> str:
+    return generate_markdown_report(payload)
+
+
+def export_report_document(payload: dict, output_path: str, format: str) -> str:
+    report_format = format.lower()
+    if report_format == "md":
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write(generate_markdown_report(payload))
+        return output_path
+    if report_format == "csv":
+        return generate_csv_report(payload, output_path)
+    if report_format == "docx":
+        return generate_docx_report(payload, output_path)
+    if report_format == "json":
+        with open(output_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, default=str)
+        return output_path
+    if report_format == "html":
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write(generate_html_report(
+                scan_id=payload.get("report_id", "unknown"),
+                target=payload.get("target", "Unknown Target"),
+                scan_type=payload.get("scan_type", "unknown"),
+                overall_score=float(payload.get("overall_score", 0) or 0),
+                vulnerabilities=payload.get("vulnerabilities", []),
+                cve_details=payload.get("cve_details", []),
+                compliance_checks=payload.get("compliance_checks", []),
+                audit_verdict={"verdict": payload.get("overall_verdict"), "reason": payload.get("verdict_reason")},
+                ai_insight=payload.get("ai_insight"),
+                started_at=payload.get("started_at"),
+                finished_at=payload.get("finished_at"),
+            ))
+        return output_path
+    raise ValueError(f"Unsupported report format: {format}")
+
+
+def _build_docx_document_xml(payload: dict) -> str:
+    paragraphs = [
+        f"VulNexus Security Report - {payload.get('target', 'Unknown Target')}",
+        f"Overall Risk: {payload.get('overall_score', 0)} / 100",
+        f"Verdict: {payload.get('overall_verdict', 'Low')}",
+        f"Executive Summary: {payload.get('ai_insight', {}).get('summary', 'No executive summary available.')}",
+    ]
+    for finding in payload.get("vulnerabilities", [])[:20]:
+        paragraphs.append(f"Finding: {finding.get('rule_id') or 'Finding'} - {finding.get('severity', 'Unknown')}")
+        paragraphs.append(f"Description: {finding.get('description', '')}")
+        paragraphs.append(f"Mitigation: {finding.get('remediation') or 'Review and remediate.'}")
+    body = "".join(f"<w:p><w:r><w:t>{escape(text)}</w:t></w:r></w:p>" for text in paragraphs)
+    return f"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>{body}<w:sectPr><w:pgSz w:w=\"12240\" w:h=\"15840\"/><w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\"/></w:sectPr></w:body></w:document>"
+
+
+def _docx_content_types() -> str:
+    return """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>"""
+
+
+def _docx_root_rels() -> str:
+    return """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>"""

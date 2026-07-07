@@ -1,6 +1,8 @@
 import secrets
 import uuid
-from datetime import datetime, timedelta
+import hashlib
+import hmac
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -10,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import hash_password, verify_password, create_access_token, create_refresh_token, get_current_user, get_current_user_optional, decode_token_subject
+from app.auth import hash_password, verify_password, create_access_token, create_refresh_token, get_current_user, get_current_user_optional, decode_token_subject, validate_password_strength, hash_token
 from app.config import settings
 from app.deps import get_db
 from app.models.db_models import User, Notification, GitHubConnection
@@ -27,7 +29,6 @@ from app.services.oauth import (
     list_github_branches,
 )
 from app.services.rbac import Permission, log_audit_event, require_permission
-from app.utils.crypto import decrypt_token
 
 router = APIRouter()
 
@@ -75,6 +76,15 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
 class SubscribeRequest(BaseModel):
     plan: Optional[str] = None
     tier: Optional[str] = None
@@ -113,7 +123,7 @@ class UserSessionInfo(BaseModel):
     name: str
     phone: str
     carrier: str
-    fav_programming_languages: List[str] = []
+    fav_programming_languages: List[str] = Field(default_factory=list)
     company: str
     job_role: str
     security_focus: str
@@ -153,9 +163,62 @@ def _session_info(user: User) -> UserSessionInfo:
     )
 
 
+def _require_oauth_config(provider: str) -> None:
+    if provider == "google" and (not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET):
+        raise HTTPException(status_code=501, detail="Google OAuth is not configured")
+    if provider == "github" and (not settings.GITHUB_CLIENT_ID or not settings.GITHUB_CLIENT_SECRET):
+        raise HTTPException(status_code=501, detail="GitHub OAuth is not configured")
+
+
+def _as_aware_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+async def _decrypt_access_token(encrypted_token: str) -> str:
+    from app.utils.crypto import decrypt_token
+
+    try:
+        return await decrypt_token(encrypted_token)
+    except Exception:
+        return encrypted_token
+
+
+def _store_refresh(user: User) -> str:
+    refresh = create_refresh_token({"sub": str(user.id)})
+    user.refresh_token = hash_token(refresh)
+    return refresh
+
+
+def _sign_oauth_state(provider: str, flow: str, nonce: str) -> str:
+    payload = f"{provider}:{flow}:{nonce}"
+    signature = hmac.new(settings.CSRF_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}:{signature}"
+
+
+def _validate_oauth_state(state: str | None, provider: str) -> str:
+    if not state:
+        raise HTTPException(status_code=400, detail="OAuth state is required")
+    parts = state.split(":")
+    if len(parts) != 4:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+    state_provider, flow, nonce, signature = parts
+    if state_provider != provider:
+        raise HTTPException(status_code=400, detail="OAuth provider mismatch")
+    expected = hmac.new(settings.CSRF_SECRET.encode("utf-8"), f"{state_provider}:{flow}:{nonce}".encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=400, detail="Invalid OAuth state signature")
+    return flow
+
+
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest, db=Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == body.email))
+    validate_password_strength(body.password)
+    normalized_email = body.email.lower()
+    result = await db.execute(select(User).where(User.email == normalized_email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Email already registered")
 
@@ -170,7 +233,7 @@ async def register(body: RegisterRequest, db=Depends(get_db)):
     limit = scan_limits.get(tier, 10)
 
     user = User(
-        email=body.email,
+        email=normalized_email,
         password_hash=hash_password(body.password),
         role="developer",
         name=body.name,
@@ -196,23 +259,21 @@ async def register(body: RegisterRequest, db=Depends(get_db)):
         raise HTTPException(status_code=409, detail="Email already registered")
 
     token = create_access_token({"sub": str(user.id)})
-    refresh = create_refresh_token({"sub": str(user.id)})
-    user.refresh_token = refresh
+    refresh = _store_refresh(user)
     await db.commit()
     return TokenResponse(access_token=token, refresh_token=refresh, user=_session_info(user))
 
 
 @router.post("/login", response_model=TokenResponse)
 async def login(body: LoginRequest, db=Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == body.email))
+    result = await db.execute(select(User).where(User.email == body.email.lower()))
     user = result.scalar_one_or_none()
-    if not user or not verify_password(body.password, user.password_hash):
+    if not user or not user.password_hash or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     token = create_access_token({"sub": str(user.id)})
-    refresh = create_refresh_token({"sub": str(user.id)})
-    user.refresh_token = refresh
-    user.last_login = datetime.utcnow()
+    refresh = _store_refresh(user)
+    user.last_login = datetime.now(timezone.utc)
     await db.commit()
     return TokenResponse(access_token=token, refresh_token=refresh, user=_session_info(user))
 
@@ -234,10 +295,11 @@ async def refresh_token(body: RefreshRequest, db=Depends(get_db)):
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if not user.refresh_token or not hmac.compare_digest(user.refresh_token, hash_token(body.refresh_token)):
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     new_token = create_access_token({"sub": str(user.id)})
-    new_refresh = create_refresh_token({"sub": str(user.id)})
-    user.refresh_token = new_refresh
+    new_refresh = _store_refresh(user)
     await db.commit()
     return TokenResponse(access_token=new_token, refresh_token=new_refresh, user=_session_info(user))
 
@@ -245,8 +307,7 @@ async def refresh_token(body: RefreshRequest, db=Depends(get_db)):
 @router.post("/google", response_model=TokenResponse)
 async def google_auth(body: OAuthRequest, db=Depends(get_db)):
     """Authenticate with Google ID token."""
-    if not settings.GOOGLE_CLIENT_ID:
-        raise HTTPException(status_code=501, detail="Google authentication not configured")
+    _require_oauth_config("google")
     
     if not body.id_token:
         raise HTTPException(status_code=400, detail="Google ID token is required")
@@ -260,8 +321,7 @@ async def google_auth(body: OAuthRequest, db=Depends(get_db)):
         name=user_info["name"],
         avatar_url=user_info["avatar_url"],
     )
-    refresh = create_refresh_token({"sub": str(user.id)})
-    user.refresh_token = refresh
+    refresh = _store_refresh(user)
     await db.commit()
     return TokenResponse(access_token=token, refresh_token=refresh, user=_session_info(user))
 
@@ -269,8 +329,7 @@ async def google_auth(body: OAuthRequest, db=Depends(get_db)):
 @router.post("/github", response_model=TokenResponse)
 async def github_auth(body: OAuthRequest, db=Depends(get_db)):
     """Authenticate with GitHub OAuth code."""
-    if not settings.GITHUB_CLIENT_ID:
-        raise HTTPException(status_code=501, detail="GitHub authentication not configured")
+    _require_oauth_config("github")
     
     if not body.code:
         raise HTTPException(status_code=400, detail="GitHub OAuth code is required")
@@ -287,8 +346,7 @@ async def github_auth(body: OAuthRequest, db=Depends(get_db)):
         github_username=user_info.get("github_username"),
         metadata=user_info.get("metadata"),
     )
-    refresh = create_refresh_token({"sub": str(user.id)})
-    user.refresh_token = refresh
+    refresh = _store_refresh(user)
     await db.commit()
     return TokenResponse(access_token=token, refresh_token=refresh, user=_session_info(user))
 
@@ -330,7 +388,7 @@ async def subscribe_plan(
         current_user.subscription_expires_at = None
         current_user.trial_ends_at = None
     else:
-        current_user.subscription_expires_at = datetime.utcnow() + timedelta(days=plan_config["expires_in_days"] or 30)
+        current_user.subscription_expires_at = datetime.now(timezone.utc) + timedelta(days=plan_config["expires_in_days"] or 30)
         current_user.trial_ends_at = None
 
     await db.commit()
@@ -350,20 +408,24 @@ async def subscribe_plan(
     
 @router.get("/google/start", response_model=OAuthStartResponse)
 async def google_start(flow: str = "login"):
-    state = f"google:{flow}:{secrets.token_urlsafe(16)}"
+    _require_oauth_config("google")
+    state = _sign_oauth_state("google", flow, secrets.token_urlsafe(16))
     return OAuthStartResponse(provider="google", authorization_url=build_google_auth_url(state), state=state)
 
 
 @router.get("/github/start", response_model=OAuthStartResponse)
 async def github_start(flow: str = "login"):
-    state = f"github:{flow}:{secrets.token_urlsafe(16)}"
+    _require_oauth_config("github")
+    state = _sign_oauth_state("github", flow, secrets.token_urlsafe(16))
     return OAuthStartResponse(provider="github", authorization_url=build_github_auth_url(state), state=state)
 
 
 @router.post("/google/exchange", response_model=TokenResponse)
 async def google_exchange(body: OAuthRequest, db=Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
+    _require_oauth_config("google")
     if not body.code:
         raise HTTPException(status_code=400, detail="Google OAuth code is required")
+    _validate_oauth_state(body.state, "google")
 
     user_info = await exchange_google_code(body.code, body.redirect_uri)
     user, token = await oauth_login_or_register(
@@ -376,16 +438,17 @@ async def google_exchange(body: OAuthRequest, db=Depends(get_db), current_user: 
         access_token=user_info.get("access_token"),
         current_user=current_user,
     )
-    refresh = create_refresh_token({"sub": str(user.id)})
-    user.refresh_token = refresh
+    refresh = _store_refresh(user)
     await db.commit()
     return TokenResponse(access_token=token, refresh_token=refresh, user=_session_info(user))
 
 
 @router.post("/github/exchange", response_model=TokenResponse)
 async def github_exchange(body: OAuthRequest, db=Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
+    _require_oauth_config("github")
     if not body.code:
         raise HTTPException(status_code=400, detail="GitHub OAuth code is required")
+    _validate_oauth_state(body.state, "github")
 
     user_info = await exchange_github_code(body.code, body.redirect_uri)
     user, token = await oauth_login_or_register(
@@ -400,8 +463,7 @@ async def github_exchange(body: OAuthRequest, db=Depends(get_db), current_user: 
         metadata=user_info.get("metadata"),
         current_user=current_user,
     )
-    refresh = create_refresh_token({"sub": str(user.id)})
-    user.refresh_token = refresh
+    refresh = _store_refresh(user)
     await db.commit()
     return TokenResponse(access_token=token, refresh_token=refresh, user=_session_info(user))
 
@@ -436,7 +498,7 @@ async def github_repository_branches(owner: str, repo: str, current_user: User =
     if not connection:
         raise HTTPException(status_code=404, detail="GitHub account is not connected")
 
-    access_token = await decrypt_token(connection.access_token)
+    access_token = await _decrypt_access_token(connection.access_token)
     branches = await list_github_branches(access_token, owner, repo)
     return GitHubBranchesResponse(owner=owner, repository=repo, branches=branches)
 
@@ -450,6 +512,36 @@ async def logout(current_user: User = Depends(get_current_user), db=Depends(get_
         user.refresh_token = None
         await db.commit()
     return {"message": "Logged out successfully"}
+
+
+@router.post("/forgot-password")
+async def forgot_password(body: ForgotPasswordRequest, db=Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+    if user:
+        token = secrets.token_urlsafe(32)
+        user.password_reset_token_hash = hash_token(token)
+        user.password_reset_expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+        await db.commit()
+        return {"message": "If the account exists, a reset token has been generated.", "reset_token_dev": token}
+    return {"message": "If the account exists, a reset token has been generated."}
+
+
+@router.post("/reset-password")
+async def reset_password(body: ResetPasswordRequest, db=Depends(get_db)):
+    validate_password_strength(body.new_password)
+    token_hash = hash_token(body.token)
+    result = await db.execute(select(User).where(User.password_reset_token_hash == token_hash))
+    user = result.scalar_one_or_none()
+    expires_at = _as_aware_utc(user.password_reset_expires_at if user else None)
+    if not user or not expires_at or expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    user.password_hash = hash_password(body.new_password)
+    user.password_reset_token_hash = None
+    user.password_reset_expires_at = None
+    user.refresh_token = None
+    await db.commit()
+    return {"message": "Password reset successfully"}
 
 
 @router.get("/me", response_model=UserSessionInfo)
@@ -502,6 +594,7 @@ async def change_password(
     if not user.password_hash:
         raise HTTPException(status_code=400, detail="OAuth users cannot change password")
     
+    validate_password_strength(body.new_password)
     if not verify_password(body.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     

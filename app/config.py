@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 import os
+import secrets
+from pathlib import Path
 from typing import Optional
+
+from dotenv import load_dotenv
+
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(BASE_DIR / ".env")
 
 
 def _get_str(name: str, default: str) -> str:
@@ -44,12 +52,14 @@ def _get_float(name: str, default: float) -> float:
 
 class Settings:
     def __init__(self) -> None:
-        self.DATABASE_URL = _get_str("DATABASE_URL", "postgresql+asyncpg://postgres:Jimmy%402005@localhost:5432/vulnexus")
+        self.DATABASE_URL = _get_str("DATABASE_URL", "postgresql+asyncpg://vulnexus:vulnexus@localhost:5432/vulnexusdb")
+        self.DATABASE_URL = self._normalize_database_url(self.DATABASE_URL)
         self.ASYNC_DATABASE_URL = _get_str("ASYNC_DATABASE_URL", self.DATABASE_URL)
+        self.ASYNC_DATABASE_URL = self._normalize_database_url(self.ASYNC_DATABASE_URL)
         self.REDIS_URL = _get_str("REDIS_URL", "redis://localhost:6379/0")
         self.CELERY_BROKER_URL = _get_str("CELERY_BROKER_URL", self.REDIS_URL)
         self.CELERY_RESULT_BACKEND = _get_str("CELERY_RESULT_BACKEND", self.REDIS_URL)
-        self.SECRET_KEY = _get_str("SECRET_KEY", "dev-only-change-me")
+        self.SECRET_KEY = _get_optional_str("SECRET_KEY") or secrets.token_urlsafe(48)
         self.ALGORITHM = _get_str("ALGORITHM", "HS256")
 
         self.ACCESS_TOKEN_EXPIRE_MINUTES = _get_int("ACCESS_TOKEN_EXPIRE_MINUTES", 60)
@@ -179,6 +189,19 @@ class Settings:
 
         self.CSRF_SECRET = _get_str("CSRF_SECRET", "change-me-csrf-secret")
         self.ENCRYPTION_KEY = _get_optional_str("ENCRYPTION_KEY")
+
+    @staticmethod
+    def _normalize_database_url(database_url: str) -> str:
+        if database_url.startswith("postgresql://"):
+            return database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        if database_url.startswith("sqlite:///") and not database_url.startswith("sqlite+aiosqlite:///"):
+            return database_url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
+        if database_url.startswith(("postgresql+asyncpg://", "sqlite+aiosqlite:///")):
+            return database_url
+        raise RuntimeError(
+            "DATABASE_URL must use postgresql+asyncpg:// or sqlite+aiosqlite:/// "
+            "(postgresql:// and sqlite:/// are normalized automatically)"
+        )
 
 
 settings = Settings()

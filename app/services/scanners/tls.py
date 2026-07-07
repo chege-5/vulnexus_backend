@@ -95,7 +95,7 @@ class TLSScanner(TargetScanner):
                 tags=["tls", "cipher"],
             ))
 
-        if not has_hsts:
+        if has_hsts is False:
             findings.append(self._finding(
                 finding_type="header",
                 title="Missing HSTS",

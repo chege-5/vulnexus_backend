@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
@@ -197,8 +197,8 @@ async def dashboard(
 
     risk_heatmap = []
     for i in range(7):
-        day = datetime.utcnow() - timedelta(days=i)
-        start_of_day = datetime(day.year, day.month, day.day)
+        day = datetime.now(timezone.utc) - timedelta(days=i)
+        start_of_day = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
         end_of_day = start_of_day + timedelta(days=1)
         count = await db.scalar(
             select(func.count()).select_from(Vulnerability).join(Scan).where(
@@ -251,9 +251,9 @@ async def dashboard(
 
     scan_trend = []
     for i in range(6, -1, -1):
-        day = datetime.utcnow() - timedelta(days=i)
+        day = datetime.now(timezone.utc) - timedelta(days=i)
         day_str = day.strftime("%a")
-        start_of_day = datetime(day.year, day.month, day.day)
+        start_of_day = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
         end_of_day = start_of_day + timedelta(days=1)
 
         scans_count = await db.scalar(

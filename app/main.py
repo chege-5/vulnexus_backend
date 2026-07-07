@@ -9,7 +9,7 @@ from prometheus_client import make_asgi_app
 from app.config import settings
 from app.deps import close_db, init_db
 from app.rate_limit import limiter
-from app.routes import scan_routes, report_routes, dashboard_routes, auth_routes, admin_routes, notification_routes, vulnerability_routes
+from app.routes import scan_routes, report_routes, dashboard_routes, auth_routes, admin_routes, notification_routes, vulnerability_routes, project_routes
 from app.services.integrations import integration_manager
 from app.utils.logger import get_logger
 
@@ -20,15 +20,10 @@ cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",") if
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-    os.makedirs(os.path.dirname(settings.ML_MODEL_PATH) or "ml_models", exist_ok=True)
     await init_db()
     if settings.ENABLE_PROVIDER_HEALTHCHECKS:
         await integration_manager.initialize()
     logger.info("VulNexus backend starting up")
-    if settings.ML_RETRAIN_ON_STARTUP:
-        from app.services.ai_risk_model import AIRiskModel
-        model = AIRiskModel()
-        model.train_model()
     yield
     await close_db()
     logger.info("VulNexus backend shutting down")
@@ -58,6 +53,7 @@ app.include_router(dashboard_routes.router, prefix="/api/v1", tags=["dashboard"]
 app.include_router(admin_routes.router, prefix="/api/v1", tags=["admin"])
 app.include_router(notification_routes.router, prefix="/api/v1", tags=["notifications"])
 app.include_router(vulnerability_routes.router, prefix="/api/v1", tags=["vulnerabilities"])
+app.include_router(project_routes.router, prefix="/api/v1", tags=["projects"])
 
 app.add_api_route(
     "/api/v1/subscribe-plan",

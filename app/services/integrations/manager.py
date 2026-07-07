@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from app.core.http_client import create_async_client
 from app.config import settings
 from app.services.integrations.base import ProviderAdapter, ProviderSettings, to_intelligence_result
 from app.services.integrations.health import ProviderHealth
@@ -101,7 +102,7 @@ class IntegrationManager:
         if not self._providers:
             return {}
 
-        async with httpx.AsyncClient(timeout=settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": "Vulnexus/1.0"}) as client:
+        async with create_async_client(timeout=settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": "Vulnexus/1.0"}) as client:
             checks = await asyncio.gather(*(self._health_for(provider, client) for provider in self._providers.values()), return_exceptions=True)
 
         health: dict[str, ProviderHealth] = {}

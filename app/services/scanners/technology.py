@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
-import httpx
-
+from app.core.http_client import create_async_client, request_with_retry
 from app.config import settings
 from app.services.integrations.manager import integration_manager
 from app.services.models.pipeline import ScanContext, ScanTarget
@@ -19,8 +18,10 @@ class TechnologyFingerprintScanner(TargetScanner):
         hostname = parsed.hostname or target.value
         findings = []
 
-        async with httpx.AsyncClient(timeout=settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS, follow_redirects=True, verify=settings.VERIFY_SCAN_TARGETS) as client:
-            response = await client.get(target.value)
+        async with create_async_client(timeout=settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS) as client:
+            response = await request_with_retry(client, "GET", target.value)
+        if response is None:
+            return ScannerResult(metadata={"error": "Unable to fetch technology fingerprint"})
         server_header = response.headers.get("server")
         powered_by = response.headers.get("x-powered-by")
         if server_header or powered_by:
