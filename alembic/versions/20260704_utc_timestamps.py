@@ -1,7 +1,7 @@
 """Convert backend timestamp columns to timezone-aware UTC storage.
 
 Revision ID: 20260704_utc_timestamps
-Revises: None
+Revises: 20260701_initial_schema
 Create Date: 2026-07-04
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "20260704_utc_timestamps"
-down_revision = None
+down_revision = "20260701_initial_schema"
 branch_labels = None
 depends_on = None
 

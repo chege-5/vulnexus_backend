@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app import database
 from app.config import settings
@@ -33,8 +36,32 @@ from app.utils.cache import cache
 from app.utils.crypto import decrypt_token
 from app.utils.file_utils import extract_zip
 from app.utils.logger import get_logger, timed_stage
+from app.utils.redaction import redact_text
 
 logger = get_logger(__name__)
+
+
+BOUNDED_VULNERABILITY_FIELDS = {
+    "severity": 32,
+    "rule_id": 255,
+    "cve_id": 64,
+    "status": 32,
+    "owasp_category": 128,
+    "nist_control": 128,
+    "mitre_technique": 128,
+}
+
+RULE_ID_PATTERN = re.compile(r"^[A-Z][A-Z0-9_-]{1,254}$")
+
+
+class ScanPersistenceError(RuntimeError):
+    pass
+
+
+@dataclass(slots=True)
+class NormalizedField:
+    value: str | None
+    changed: bool = False
 
 
 @dataclass(slots=True)
@@ -105,7 +132,29 @@ class ScanOrchestrator:
             await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, message="Enriching intelligence", progress=88)
             enriched = await asyncio.gather(*(knowledge_engine.enrich(item, risk=risk.model_dump()) for item in correlated))
 
-            await self._persist_results(db, scan, context, enriched, risk)
+            try:
+                await self._persist_results(db, scan, context, enriched, risk)
+            except Exception as exc:
+                await db.rollback()
+                finished_at = datetime.now(timezone.utc)
+                message = self._persistence_error_message(exc)
+                await self._mark_scan(
+                    db,
+                    scan,
+                    status=ScanStatus.FAILED.value,
+                    progress=max(scan.progress or 0, 88),
+                    error_message=message,
+                    finished_at=finished_at,
+                )
+                await self._store_progress(
+                    context,
+                    status=ScanStatus.FAILED.value,
+                    message="Scan failed while saving findings",
+                    progress=max(scan.progress or 0, 88),
+                    error_message=message,
+                    finished_at=finished_at,
+                )
+                raise ScanPersistenceError(message) from exc
 
             finished_at = datetime.now(timezone.utc)
             await self._mark_scan(db, scan, status=ScanStatus.COMPLETED.value, progress=100, overall_score=risk.score, finished_at=finished_at)
@@ -182,51 +231,58 @@ class ScanOrchestrator:
         known_exploit_count = 0
         vulnerability_payloads: list[dict[str, Any]] = []
 
-        for finding in findings:
+        vulnerability_records: list[dict[str, Any]] = []
+
+        for index, finding in enumerate(findings, 1):
             incident = finding.finding
-            remediation_key = incident.raw_findings[0].raw_data.get("rule_id") if incident.raw_findings else incident.group_key
+            diagnostics: dict[str, Any] = {}
+            rule_id = self._normalize_rule_id(incident, index, diagnostics)
+            remediation_key = rule_id or (incident.contributing_rule_ids[0] if incident.contributing_rule_ids else incident.correlation_id)
             remediation = get_remediation(remediation_key)
-            profile = infer_vulnerability_profile(incident.group_key, incident.severity, cve_id=finding.cve_id, cvss_score=finding.cvss_score)
+            profile = infer_vulnerability_profile(rule_id, incident.severity, cve_id=finding.cve_id, cvss_score=finding.cvss_score)
             if finding.knowledge.get("threat", {}).get("cisa_kev"):
                 known_exploit_count += 1
 
-            vuln = Vulnerability(
+            record = self._validated_vulnerability_record(
                 scan_id=scan.id,
-                rule_id=incident.group_key,
-                description=incident.description,
-                severity=self._map_severity(incident.severity),
-                ml_score=risk.score,
-                file_path=incident.evidence.get("file_path") or incident.evidence.get("location"),
-                line_number=incident.evidence.get("line_number"),
+                finding_index=index,
+                rule_id=rule_id,
+                incident=incident,
+                finding=finding,
+                risk_score=risk.score,
                 remediation=remediation,
-                cve_id=finding.cve_id,
-                cvss_score=finding.cvss_score,
-                cwe_ids=incident.cwe_ids,
-                owasp_category=profile.get("owasp_category"),
-                nist_control=profile.get("nist_control"),
-                mitre_technique=profile.get("mitre_technique"),
-                known_exploit=bool(profile.get("known_exploit")),
-                references=finding.references or None,
-                compliance_results={"owasp_top_10": profile.get("owasp_category"), "nist": profile.get("nist_control"), "cwe": incident.cwe_ids, "intelligence": finding.knowledge.get("compliance", {})},
+                profile=profile,
+                diagnostics=diagnostics,
             )
-            db.add(vuln)
+            vulnerability_records.append(record)
 
             vulnerability_payloads.append({
-                "rule_id": vuln.rule_id,
-                "description": vuln.description,
+                "rule_id": record["rule_id"],
+                "correlation_id": incident.correlation_id,
+                "contributing_rule_ids": incident.contributing_rule_ids,
+                "title": incident.title,
+                "description": record["description"],
                 "severity": incident.severity,
+                "confidence": incident.confidence,
                 "ml_score": risk.score,
-                "file_path": vuln.file_path,
-                "line_number": vuln.line_number,
+                "file_path": record["file_path"],
+                "line_number": record["line_number"],
                 "remediation": remediation,
-                "cve_id": finding.cve_id,
+                "cve_id": record["cve_id"],
                 "cvss_score": finding.cvss_score,
                 "cwe_ids": incident.cwe_ids,
-                "owasp_category": profile.get("owasp_category"),
-                "nist_control": profile.get("nist_control"),
-                "mitre_technique": profile.get("mitre_technique"),
+                "owasp_category": record["owasp_category"],
+                "nist_control": record["nist_control"],
+                "mitre_technique": record["mitre_technique"],
                 "known_exploit": bool(profile.get("known_exploit")),
+                "classification": incident.classification,
+                "evidence": incident.evidence,
+                "evidence_items": incident.evidence_items,
+                "sources": incident.sources,
+                "affected_assets": incident.related_assets,
+                "limitations": incident.evidence.get("limitations") or incident.evidence.get("errors"),
                 "knowledge": finding.knowledge,
+                "provider_statuses": finding.knowledge.get("threat", {}).get("provider_statuses", []),
                 "graph_context": finding.graph_context,
                 "llm_context": finding.llm_context,
                 "attack_story": finding.knowledge.get("attack", {}).get("attack_story"),
@@ -236,6 +292,9 @@ class ScanOrchestrator:
             if finding.cve_id and finding.cve_id not in cve_entries:
                 cve_entries[finding.cve_id] = CVEEntry(cve_id=finding.cve_id, summary=finding.intelligence[0].summary if finding.intelligence else None, cvss_score=finding.cvss_score, published_date=None, references=finding.references or None)
 
+        for record in vulnerability_records:
+            db.add(Vulnerability(**record))
+
         for entry in cve_entries.values():
             await db.merge(entry)
 
@@ -244,7 +303,14 @@ class ScanOrchestrator:
         for item in compliance_checks:
             db.add(ComplianceCheck(scan_id=scan.id, standard=item["standard"], category=item.get("category"), result=item["result"], score=item.get("score"), details=item.get("details")))
 
-        await db.commit()
+        try:
+            await db.commit()
+        except SQLAlchemyError as exc:
+            await db.rollback()
+            logger.exception("Failed to persist validated findings for scan %s", scan.id)
+            raise ScanPersistenceError(
+                "Failed to save scan findings after validation; database rejected the batch"
+            ) from exc
 
         final_verdict = derive_final_audit_verdict(
             overall_score=risk.score,
@@ -276,6 +342,263 @@ class ScanOrchestrator:
             started_at=scan.started_at,
             finished_at=datetime.now(timezone.utc),
         )
+
+    def _validated_vulnerability_record(
+        self,
+        *,
+        scan_id: UUID,
+        finding_index: int,
+        rule_id: str | None,
+        incident: CorrelatedFinding,
+        finding: EnrichedFinding,
+        risk_score: float,
+        remediation: str | None,
+        profile: dict[str, Any],
+        diagnostics: dict[str, Any],
+    ) -> dict[str, Any]:
+        description = self._clean_text(incident.description, field="description", finding_index=finding_index) or "Security finding"
+        severity = self._bounded_string(
+            self._map_severity(incident.severity),
+            field="severity",
+            max_length=BOUNDED_VULNERABILITY_FIELDS["severity"],
+            finding_index=finding_index,
+            required=True,
+        )
+        cve_id = self._bounded_string(
+            finding.cve_id,
+            field="cve_id",
+            max_length=BOUNDED_VULNERABILITY_FIELDS["cve_id"],
+            finding_index=finding_index,
+            identifier=True,
+        )
+        status = self._bounded_string(
+            "open",
+            field="status",
+            max_length=BOUNDED_VULNERABILITY_FIELDS["status"],
+            finding_index=finding_index,
+            required=True,
+        )
+        file_path = self._clean_text(
+            incident.evidence.get("file_path") or incident.evidence.get("location") or self._primary_location(incident),
+            field="file_path",
+            finding_index=finding_index,
+        )
+        normalized_remediation = self._clean_text(remediation, field="remediation", finding_index=finding_index)
+        owasp_category = self._bounded_string(
+            profile.get("owasp_category"),
+            field="owasp_category",
+            max_length=BOUNDED_VULNERABILITY_FIELDS["owasp_category"],
+            finding_index=finding_index,
+        )
+        nist_control = self._bounded_string(
+            profile.get("nist_control"),
+            field="nist_control",
+            max_length=BOUNDED_VULNERABILITY_FIELDS["nist_control"],
+            finding_index=finding_index,
+        )
+        mitre_technique = self._bounded_string(
+            profile.get("mitre_technique"),
+            field="mitre_technique",
+            max_length=BOUNDED_VULNERABILITY_FIELDS["mitre_technique"],
+            finding_index=finding_index,
+        )
+        line_number = self._line_number(incident)
+        code_snippet = self._clean_text(incident.evidence.get("line_preview"), field="code_snippet", finding_index=finding_index)
+        compliance_results = {
+            "owasp_top_10": owasp_category,
+            "nist": nist_control,
+            "cwe": incident.cwe_ids,
+            "intelligence": finding.knowledge.get("compliance", {}),
+            "correlation": {
+                "correlation_id": incident.correlation_id,
+                "contributing_rule_ids": incident.contributing_rule_ids,
+            },
+        }
+        if diagnostics:
+            compliance_results["diagnostics"] = diagnostics
+
+        bounded_values = {
+            "description": description,
+            "severity": severity,
+            "rule_id": rule_id,
+            "cve_id": cve_id,
+            "file_path": file_path,
+            "remediation": normalized_remediation,
+            "status": status,
+            "owasp_category": owasp_category,
+            "nist_control": nist_control,
+            "mitre_technique": mitre_technique,
+        }
+        self._log_bounded_field_lengths(finding_index, bounded_values)
+
+        return {
+            "scan_id": scan_id,
+            "rule_id": rule_id,
+            "description": description,
+            "severity": severity,
+            "ml_score": risk_score,
+            "file_path": file_path,
+            "line_number": line_number,
+            "code_snippet": code_snippet,
+            "remediation": normalized_remediation,
+            "cve_id": cve_id,
+            "cvss_score": finding.cvss_score,
+            "cwe_ids": incident.cwe_ids,
+            "owasp_category": owasp_category,
+            "nist_control": nist_control,
+            "mitre_technique": mitre_technique,
+            "known_exploit": bool(profile.get("known_exploit")),
+            "references": finding.references or None,
+            "status": status,
+            "compliance_results": compliance_results,
+        }
+
+    def _normalize_rule_id(
+        self,
+        incident: CorrelatedFinding,
+        finding_index: int,
+        diagnostics: dict[str, Any],
+    ) -> str:
+        candidates = self._rule_id_candidates(incident)
+        original = candidates[0] if candidates else incident.group_key
+        for candidate in candidates:
+            value = self._clean_text(candidate, field="rule_id", finding_index=finding_index)
+            if value and self._is_valid_rule_id(value):
+                if original and value != str(original).strip():
+                    diagnostics["rule_id_normalized_from"] = "alternate_contributing_rule_id"
+                    diagnostics["original_rule_id_hash"] = self._diagnostic_hash(original)
+                    diagnostics["original_rule_id_preview"] = self._diagnostic_preview(original)
+                return value
+
+        fallback = self._fallback_rule_id(original or incident.group_key)
+        diagnostics["rule_id_normalized_from"] = "malformed_rule_id"
+        diagnostics["original_rule_id_hash"] = self._diagnostic_hash(original)
+        diagnostics["original_rule_id_preview"] = self._diagnostic_preview(original)
+        diagnostics["correlation_id"] = incident.correlation_id
+        logger.warning(
+            "Replacing malformed rule_id for finding %s with %s; original hash=%s",
+            finding_index,
+            fallback,
+            diagnostics["original_rule_id_hash"],
+        )
+        return fallback
+
+    def _rule_id_candidates(self, incident: CorrelatedFinding) -> list[Any]:
+        candidates: list[Any] = []
+        for finding in incident.raw_findings:
+            for candidate in (
+                finding.raw_data.get("rule_id"),
+                finding.evidence.get("rule_id"),
+                finding.raw_data.get("source_rule_id"),
+                finding.evidence.get("source_rule_id"),
+            ):
+                if candidate not in candidates:
+                    candidates.append(candidate)
+        for candidate in incident.contributing_rule_ids:
+            if candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
+
+    def _bounded_string(
+        self,
+        value: Any,
+        *,
+        field: str,
+        max_length: int,
+        finding_index: int,
+        required: bool = False,
+        identifier: bool = False,
+    ) -> str | None:
+        cleaned = self._clean_text(value, field=field, finding_index=finding_index)
+        if not cleaned:
+            if required:
+                raise ScanPersistenceError(f"Finding {finding_index} is missing required field {field}")
+            return None
+        if len(cleaned) <= max_length:
+            return cleaned
+        if identifier:
+            logger.warning(
+                "Dropping oversized identifier field %s for finding %s; length=%s max=%s hash=%s",
+                field,
+                finding_index,
+                len(cleaned),
+                max_length,
+                self._diagnostic_hash(cleaned),
+            )
+            return None
+        logger.warning(
+            "Truncating bounded field %s for finding %s; length=%s max=%s hash=%s",
+            field,
+            finding_index,
+            len(cleaned),
+            max_length,
+            self._diagnostic_hash(cleaned),
+        )
+        return cleaned[:max_length]
+
+    def _clean_text(self, value: Any, *, field: str, finding_index: int) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, (str, int, float, bool)):
+            cleaned = str(value).strip()
+        else:
+            cleaned = str(value).strip()
+        if not cleaned:
+            return None
+        return cleaned
+
+    def _is_valid_rule_id(self, value: str) -> bool:
+        return bool(RULE_ID_PATTERN.fullmatch(value)) and len(value) <= BOUNDED_VULNERABILITY_FIELDS["rule_id"]
+
+    def _fallback_rule_id(self, value: Any) -> str:
+        digest = self._diagnostic_hash(value)[:12].upper()
+        return f"VN-FALLBACK-{digest}"
+
+    def _diagnostic_hash(self, value: Any) -> str:
+        return hashlib.sha256(str(value or "").encode("utf-8", errors="ignore")).hexdigest()
+
+    def _diagnostic_preview(self, value: Any) -> str:
+        return redact_text(str(value or ""))[:160]
+
+    def _primary_location(self, incident: CorrelatedFinding) -> str | None:
+        if incident.raw_findings:
+            return incident.raw_findings[0].location
+        locations = incident.evidence.get("locations")
+        if isinstance(locations, list) and locations:
+            return str(locations[0])
+        return None
+
+    def _line_number(self, incident: CorrelatedFinding) -> int | None:
+        value = incident.evidence.get("line_number")
+        if value is None and incident.raw_findings:
+            value = incident.raw_findings[0].evidence.get("line_number")
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _log_bounded_field_lengths(self, finding_index: int, fields: dict[str, Any]) -> None:
+        if settings.ENVIRONMENT not in {"development", "dev", "test", "testing"}:
+            return
+        lengths = {field: len(str(value)) for field, value in fields.items() if value is not None}
+        over_limit = {
+            field: length
+            for field, length in lengths.items()
+            if field in BOUNDED_VULNERABILITY_FIELDS and length > BOUNDED_VULNERABILITY_FIELDS[field]
+        }
+        logger.debug(
+            "Validated vulnerability bounded field lengths for finding %s: lengths=%s over_limit=%s",
+            finding_index,
+            lengths,
+            over_limit,
+        )
+
+    def _persistence_error_message(self, exc: Exception) -> str:
+        if isinstance(exc, ScanPersistenceError):
+            return redact_text(str(exc))[:500]
+        if isinstance(exc, SQLAlchemyError):
+            return "Failed to save scan findings because the database rejected the validated batch"
+        return redact_text(str(exc))[:500] or "Failed to save scan findings"
 
     async def _load_scan(self, db, scan_id: UUID):
         result = await db.execute(select(Scan).where(Scan.id == scan_id))

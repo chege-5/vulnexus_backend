@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import os
-import secrets
 from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-
-
 BASE_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(BASE_DIR / ".env")
 
@@ -16,11 +13,27 @@ def _get_str(name: str, default: str) -> str:
     return os.getenv(name, default)
 
 
+def _get_first_str(names: tuple[str, ...], default: str) -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and value.strip() != "":
+            return value
+    return default
+
+
 def _get_optional_str(name: str) -> Optional[str]:
     value = os.getenv(name)
     if value is None or value.strip() == "":
         return None
     return value
+
+
+def _get_first_optional_str(names: tuple[str, ...]) -> Optional[str]:
+    for name in names:
+        value = _get_optional_str(name)
+        if value is not None:
+            return value
+    return None
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -52,19 +65,26 @@ def _get_float(name: str, default: float) -> float:
 
 class Settings:
     def __init__(self) -> None:
+        self.ENVIRONMENT = _get_str("ENVIRONMENT", "development").strip().lower()
+        self.IS_PRODUCTION = self.ENVIRONMENT in {"production", "prod"}
         self.DATABASE_URL = _get_str("DATABASE_URL", "postgresql+asyncpg://vulnexus:vulnexus@localhost:5432/vulnexusdb")
         self.DATABASE_URL = self._normalize_database_url(self.DATABASE_URL)
         self.ASYNC_DATABASE_URL = _get_str("ASYNC_DATABASE_URL", self.DATABASE_URL)
         self.ASYNC_DATABASE_URL = self._normalize_database_url(self.ASYNC_DATABASE_URL)
+        if self.ASYNC_DATABASE_URL != self.DATABASE_URL:
+            raise RuntimeError(
+                "ASYNC_DATABASE_URL is deprecated and must match DATABASE_URL; "
+                "FastAPI and Alembic use DATABASE_URL as the single source of truth"
+            )
         self.REDIS_URL = _get_str("REDIS_URL", "redis://localhost:6379/0")
         self.CELERY_BROKER_URL = _get_str("CELERY_BROKER_URL", self.REDIS_URL)
         self.CELERY_RESULT_BACKEND = _get_str("CELERY_RESULT_BACKEND", self.REDIS_URL)
-        self.SECRET_KEY = _get_optional_str("SECRET_KEY") or secrets.token_urlsafe(48)
+        self.SECRET_KEY = _get_optional_str("SECRET_KEY")
         self.ALGORITHM = _get_str("ALGORITHM", "HS256")
 
         self.ACCESS_TOKEN_EXPIRE_MINUTES = _get_int("ACCESS_TOKEN_EXPIRE_MINUTES", 60)
         self.REFRESH_TOKEN_EXPIRE_DAYS = _get_int("REFRESH_TOKEN_EXPIRE_DAYS", 30)
-        self.CORS_ORIGINS = _get_str("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost,https://vulnexus.vercel.app")
+        self.CORS_ORIGINS = _get_str("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
 
         self.UPLOAD_DIR = _get_str("UPLOAD_DIR", "./uploads")
         self.MAX_UPLOAD_SIZE_MB = _get_int("MAX_UPLOAD_SIZE_MB", 50)
@@ -73,6 +93,15 @@ class Settings:
         self.MAX_ZIP_RATIO = _get_int("MAX_ZIP_RATIO", 100)
         self.VERIFY_SCAN_TARGETS = _get_bool("VERIFY_SCAN_TARGETS", True)
         self.SCAN_TIMEOUT = _get_int("SCAN_TIMEOUT", 60)
+        self.TLS_CONNECT_TIMEOUT_SECONDS = _get_float("TLS_CONNECT_TIMEOUT_SECONDS", 6.0)
+        self.TLS_NEAR_EXPIRY_DAYS = _get_int("TLS_NEAR_EXPIRY_DAYS", 30)
+        self.TLS_MIN_VERSION = _get_str("TLS_MIN_VERSION", "TLSv1.2")
+        self.TLS_REQUIRE_VERSION = _get_str("TLS_REQUIRE_VERSION", "TLSv1.3")
+        self.TLS_REQUIRE_FORWARD_SECRECY = _get_bool("TLS_REQUIRE_FORWARD_SECRECY", True)
+        self.TLS_HSTS_MIN_AGE_SECONDS = _get_int("TLS_HSTS_MIN_AGE_SECONDS", 31536000)
+        self.TLS_MIN_RSA_BITS = _get_int("TLS_MIN_RSA_BITS", 2048)
+        self.TLS_MIN_EC_BITS = _get_int("TLS_MIN_EC_BITS", 224)
+        self.SOURCE_CONTEXT_LINES = _get_int("SOURCE_CONTEXT_LINES", 2)
         self.MAX_CONCURRENT_SCANS = _get_int("MAX_CONCURRENT_SCANS", 10)
         self.ENABLE_PARALLEL_SCANNERS = _get_bool("ENABLE_PARALLEL_SCANNERS", True)
         self.ENABLE_PROVIDER_HEALTHCHECKS = _get_bool("ENABLE_PROVIDER_HEALTHCHECKS", True)
@@ -151,9 +180,13 @@ class Settings:
         self.CLOUDFLARE_ENABLED = _get_bool("CLOUDFLARE_ENABLED", False)
 
         self.LLM_ENABLED = _get_bool("LLM_ENABLED", False)
-        self.OPENAI_API_KEY = _get_optional_str("OPENAI_API_KEY")
-        self.OPENAI_BASE_URL = _get_str("OPENAI_BASE_URL", "https://integrate.api.nvidia.com/v1")
-        self.OPENAI_MODEL = _get_str("OPENAI_MODEL", "gemma-2-27b-it")
+        self.OPENAI_API_KEY = _get_first_optional_str(("OPENAI_API_KEY", "AI_API_KEY"))
+        self.OPENAI_BASE_URL = _get_first_str(("OPENAI_BASE_URL", "OPENAI_API_BASE", "AI_API_BASE_URL"), "https://integrate.api.nvidia.com/v1")
+        self.OPENAI_MODEL = _get_first_str(("OPENAI_MODEL", "OPENAI_API_MODEL", "AI_API_MODEL"), "gemma-2-27b-it")
+        self.OPENAI_TIMEOUT_SECONDS = _get_float("OPENAI_TIMEOUT_SECONDS", 30.0)
+        self.OPENAI_MAX_TOKENS = _get_int("OPENAI_MAX_TOKENS", 450)
+        self.OPENAI_TEMPERATURE = _get_float("OPENAI_TEMPERATURE", 0.2)
+        self.LLM_RATE_LIMIT = _get_str("LLM_RATE_LIMIT", "30/minute")
 
         self.REPORT_RENDERER = _get_str("REPORT_RENDERER", "playwright")
         self.PLAYWRIGHT_BROWSER_PATH = _get_optional_str("PLAYWRIGHT_BROWSER_PATH")
@@ -187,20 +220,45 @@ class Settings:
         self.GITHUB_CLIENT_SECRET = _get_optional_str("GITHUB_CLIENT_SECRET")
         self.GITHUB_REDIRECT_URI = _get_str("GITHUB_REDIRECT_URI", "http://localhost:5173/auth/github/callback")
 
-        self.CSRF_SECRET = _get_str("CSRF_SECRET", "change-me-csrf-secret")
+        self.CSRF_SECRET = _get_optional_str("CSRF_SECRET")
         self.ENCRYPTION_KEY = _get_optional_str("ENCRYPTION_KEY")
+        self.METRICS_TOKEN = _get_optional_str("METRICS_TOKEN")
+        self.SESSION_COOKIE_NAME = _get_str("SESSION_COOKIE_NAME", "vulnexus_refresh")
+        self.SESSION_COOKIE_SECURE = _get_bool("SESSION_COOKIE_SECURE", self.IS_PRODUCTION)
+        self.SESSION_COOKIE_SAMESITE = _get_str("SESSION_COOKIE_SAMESITE", "lax").lower()
+        self.SESSION_COOKIE_DOMAIN = _get_optional_str("SESSION_COOKIE_DOMAIN")
+        self.SMTP_HOST = _get_optional_str("SMTP_HOST")
+        self.SMTP_PORT = _get_int("SMTP_PORT", 587)
+        self.SMTP_USERNAME = _get_optional_str("SMTP_USERNAME")
+        self.SMTP_PASSWORD = _get_optional_str("SMTP_PASSWORD")
+        self.SMTP_FROM_EMAIL = _get_optional_str("SMTP_FROM_EMAIL")
+        self.PASSWORD_RESET_URL = _get_optional_str("PASSWORD_RESET_URL")
+
+        if self.IS_PRODUCTION:
+            if not self.SECRET_KEY or len(self.SECRET_KEY) < 32 or self.SECRET_KEY.startswith(("dev-", "change-me")):
+                raise RuntimeError("SECRET_KEY must be a unique, high-entropy value of at least 32 characters in production")
+            if not self.CSRF_SECRET or len(self.CSRF_SECRET) < 32 or self.CSRF_SECRET.startswith(("dev-", "change-me")):
+                raise RuntimeError("CSRF_SECRET must be a unique, high-entropy value of at least 32 characters in production")
+            if not self.METRICS_TOKEN or len(self.METRICS_TOKEN) < 32:
+                raise RuntimeError("METRICS_TOKEN must be configured in production")
+            if not self.SMTP_HOST or not self.SMTP_FROM_EMAIL or not self.PASSWORD_RESET_URL:
+                raise RuntimeError("SMTP_HOST, SMTP_FROM_EMAIL, and PASSWORD_RESET_URL must be configured in production")
+            if any("localhost" in origin or "127.0.0.1" in origin for origin in self.CORS_ORIGINS.split(",")):
+                raise RuntimeError("CORS_ORIGINS must not contain local development origins in production")
+
+        # Development remains usable without a committed secret. Production never does.
+        self.SECRET_KEY = self.SECRET_KEY or "development-only-not-for-deployment"
+        self.CSRF_SECRET = self.CSRF_SECRET or "development-only-not-for-deployment"
 
     @staticmethod
     def _normalize_database_url(database_url: str) -> str:
         if database_url.startswith("postgresql://"):
             return database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-        if database_url.startswith("sqlite:///") and not database_url.startswith("sqlite+aiosqlite:///"):
-            return database_url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
-        if database_url.startswith(("postgresql+asyncpg://", "sqlite+aiosqlite:///")):
+        if database_url.startswith("postgresql+asyncpg://"):
             return database_url
         raise RuntimeError(
-            "DATABASE_URL must use postgresql+asyncpg:// or sqlite+aiosqlite:/// "
-            "(postgresql:// and sqlite:/// are normalized automatically)"
+            "DATABASE_URL must use postgresql+asyncpg:// "
+            "(postgresql:// is normalized automatically)"
         )
 
 

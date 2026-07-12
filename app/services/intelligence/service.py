@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.integrations.manager import integration_manager
+from app.services.finding_classifier import build_software_lookup_query, safe_intelligence_context
 from app.services.intelligence.mapping import MappingDecision, build_decision
 from app.services.models.pipeline import IntelligenceResult as PipelineIntelligenceResult
 from app.utils.cache import cache
@@ -46,20 +47,22 @@ class IntelligenceService:
                 references=decision.references,
             )
 
-        cache_key = self._build_cache_key(decision.finding_key, rule_id, description, metadata)
+        lookup_query = build_software_lookup_query(finding_key or decision.finding_key, metadata)
+        safe_context = safe_intelligence_context({**(metadata or {}), "classification": decision.classification})
+        cache_key = self._build_cache_key(lookup_query, rule_id, description, safe_context)
         cached = await cache.get("intelligence", cache_key)
         if cached:
             return self._deserialize_result(cached, decision)
 
         provider_results = await integration_manager.enrich_intelligence(
-            decision.finding_key,
-            context=metadata or {},
+            lookup_query,
+            context=safe_context,
             providers=["nvd", "circl", "epss", "cisa", "mitre"],
         )
         provider_hits = [self._result_to_hit(item) for item in provider_results]
         best = self._select_best_hit(provider_hits)
         result = IntelligenceResult(
-            finding_key=decision.finding_key,
+            finding_key=lookup_query,
             decision=decision,
             requires_cve_lookup=True,
             cve_id=best.get("identifier") if best else None,

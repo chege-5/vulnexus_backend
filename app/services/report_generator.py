@@ -8,12 +8,21 @@ from datetime import datetime, timezone
 from typing import Optional
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
-from jinja2 import Template
+from jinja2 import Environment, select_autoescape
 from app.config import settings
 from app.services.report_renderer import get_report_renderer
 from app.utils.logger import get_logger
+from app.utils.redaction import redact_data, redact_json_string, redact_text
 
 logger = get_logger(__name__)
+
+HTML_ENV = Environment(
+    autoescape=select_autoescape(
+        enabled_extensions=("html", "htm", "xml"),
+        default_for_string=True,
+        default=True,
+    )
+)
 
 REPORT_TEMPLATE = """
 <!DOCTYPE html>
@@ -211,8 +220,8 @@ footer {
 <section class="cover">
     <div class="brand">VulNexus Security Audit</div>
     <h1>{{ target }}</h1>
-    <p>Enterprise-grade cryptography, transport, secrets, and repository security assessment for {{ scan_type|upper }} targets. This report consolidates SAST, DAST, AI risk analysis, and compliance signal into a single audit artifact.</p>
-    <p><strong>Report ID:</strong> {{ scan_id }}<br><strong>Generated:</strong> {{ generated_at }}<br><strong>Started:</strong> {{ started_at or 'N/A' }}<br><strong>Finished:</strong> {{ finished_at or 'N/A' }}</p>
+    <p>Regex-based static analysis, active TLS probing, and HTTP header inspection report for {{ scan_type|upper }} targets. This artifact summarizes representative security weakness findings for review and demonstration.</p>
+    <p><strong>Report ID:</strong> {{ scan_id }}<br><strong>Generated:</strong> {{ generated_at }}<br><strong>Started:</strong> {{ started_at or 'Not Applicable' }}<br><strong>Finished:</strong> {{ finished_at or 'Not Applicable' }}</p>
 </section>
 
 <section class="section">
@@ -257,20 +266,25 @@ footer {
     <table>
         <thead>
             <tr>
-                <th>#</th><th>Severity</th><th>Rule ID</th><th>Description</th><th>Score</th><th>Attack Story</th><th>CVE / CVSS</th><th>Location</th>
+                <th>#</th><th>Rule ID</th><th>Rule Name</th><th>Category</th><th>Severity</th><th>Confidence</th><th>Affected Asset</th><th>Line</th><th>Column</th><th>Matched Pattern</th><th>Evidence</th><th>Recommendation</th><th>CWE / OWASP</th>
             </tr>
         </thead>
         <tbody>
         {% for v in vulnerabilities %}
             <tr>
                 <td>{{ loop.index }}</td>
+                <td>{{ v.rule_id }}</td>
+                <td>{{ v.display_title }}</td>
+                <td>{{ v.display_category }}</td>
                 <td><span class="pill {{ v.severity|lower }}">{{ v.severity }}</span></td>
-                <td>{{ v.rule_id or 'N/A' }}</td>
-                <td>{{ v.description }}</td>
-                <td>{{ v.ml_score if v.ml_score is not none else 'N/A' }}</td>
-                <td>{{ v.attack_story or (v.knowledge.attack.attack_story if v.knowledge and v.knowledge.attack and v.knowledge.attack.attack_story else 'N/A') }}</td>
-                <td>{{ v.cve_id or 'N/A' }}</td>
-                <td>{{ v.file_path or 'N/A' }}{% if v.line_number %}:{{ v.line_number }}{% endif %}</td>
+                <td>{{ v.display_confidence }}</td>
+                <td>{{ v.display_location }}</td>
+                <td>{{ v.line_number or 'Not Applicable' }}</td>
+                <td>{{ v.display_column }}</td>
+                <td>{{ v.display_matched_pattern }}</td>
+                <td>{{ v.display_evidence }}</td>
+                <td>{{ v.remediation or v.recommendation or 'Review and remediate using current security guidance.' }}</td>
+                <td>{{ v.display_mapping }}</td>
             </tr>
         {% endfor %}
         </tbody>
@@ -289,7 +303,7 @@ footer {
     </div>
     {% for v in vulnerabilities[:5] %}
     <div class="finding">
-        <h3>{{ v.rule_id or 'Finding' }}</h3>
+        <h3>{{ v.display_title }}</h3>
         <p>{{ v.attack_story or (v.knowledge.attack.attack_story if v.knowledge and v.knowledge.attack and v.knowledge.attack.attack_story else v.description) }}</p>
     </div>
     {% endfor %}
@@ -309,10 +323,10 @@ footer {
         {% for check in compliance_checks %}
             <tr>
                 <td>{{ check.standard }}</td>
-                <td>{{ check.category or 'N/A' }}</td>
+                <td>{{ check.category or 'Not Applicable' }}</td>
                 <td>{{ check.result }}</td>
-                <td>{{ check.score if check.score is not none else 'N/A' }}</td>
-                <td>{{ check.details.rule_id if check.details and check.details.rule_id else 'N/A' }}</td>
+                <td>{{ check.score if check.score is not none else 'Not Applicable' }}</td>
+                <td>{{ check.details.finding if check.details and check.details.finding else 'See finding evidence' }}</td>
             </tr>
         {% endfor %}
         </tbody>
@@ -341,9 +355,9 @@ footer {
         {% for c in cve_details %}
             <tr>
                 <td>{{ c.cve_id }}</td>
-                <td>{{ c.cvss_score or 'N/A' }}</td>
-                <td>{{ c.summary or 'N/A' }}</td>
-                <td>{{ c.published_date or 'N/A' }}</td>
+                <td>{{ c.cvss_score or 'Not Applicable' }}</td>
+                <td>{{ c.summary or 'Not Applicable' }}</td>
+                <td>{{ c.published_date or 'Not Applicable' }}</td>
             </tr>
         {% endfor %}
         </tbody>
@@ -356,7 +370,7 @@ footer {
     {% for v in vulnerabilities %}
         {% if v.remediation %}
         <div class="finding">
-            <h3>{{ v.rule_id or 'Issue' }} - {{ v.severity }}</h3>
+            <h3>{{ v.display_title }} - {{ v.severity }}</h3>
             <p>{{ v.remediation }}</p>
         </div>
         {% endif %}
@@ -377,7 +391,7 @@ footer {
 </section>
 
 <footer>
-    <div>Generated by VulNexus - AI-Based Cryptography Vulnerability Scanner</div>
+    <div>Generated by VulNexus - Cryptography and Security Weakness Scanner</div>
     <div>Report ID {{ scan_id }} | {{ generated_at }}</div>
 </footer>
 </div>
@@ -391,6 +405,10 @@ REMEDIATION_MAP = {
     "WEAK_CIPHER_DES": "Replace DES with AES-256-GCM. DES has a 56-bit key which is trivially brute-forceable.",
     "WEAK_CIPHER_RC2": "Replace RC2 with AES-256-GCM. RC2 is considered cryptographically weak.",
     "WEAK_CIPHER_AES-ECB": "Replace ECB mode with GCM or CBC with proper IV. ECB leaks patterns in plaintext.",
+    "WEAK_CIPHER_3DES": "Replace 3DES with AES-256-GCM or ChaCha20-Poly1305.",
+    "WEAK_CIPHER_RC4": "Disable RC4 and use modern AEAD ciphers.",
+    "WEAK_CIPHER_BLOWFISH": "Prefer AES-GCM or ChaCha20-Poly1305 for new encryption.",
+    "CBC_WITHOUT_AUTH": "Use an authenticated encryption mode such as AES-GCM or add encrypt-then-MAC.",
     "SMALL_RSA_KEY": "Use RSA key size of 2048 bits minimum (NIST recommendation). Consider 4096 for long-term security.",
     "SMALL_AES_KEY": "Use AES-128 minimum; AES-256 recommended for sensitive data.",
     "HARDCODED_KEY": "Move keys to environment variables or a secrets manager (e.g., AWS Secrets Manager, HashiCorp Vault).",
@@ -400,6 +418,31 @@ REMEDIATION_MAP = {
     "NO_HSTS": "Add Strict-Transport-Security header with max-age=31536000; includeSubDomains.",
     "NO_FORWARD_SECRECY": "Configure server to prefer ECDHE cipher suites for forward secrecy.",
     "EXPIRED_CERT": "Renew the expired certificate immediately. Set up automated renewal.",
+    "CERT_NEAR_EXPIRY": "Renew or rotate the certificate before expiry and monitor certificate lifecycle automation.",
+    "CERT_HOSTNAME_MISMATCH": "Reissue the certificate with SAN entries that exactly match the service hostname.",
+    "WEAK_CERT_CRYPTO": "Reissue the certificate using SHA-256 or stronger signatures and RSA >= 2048 bits or ECDSA P-256+ keys.",
+    "UNTRUSTED_CERT_CHAIN": "Install a CA-trusted certificate and include the correct intermediate certificates in the served chain.",
+    "WEAK_CIPHER_SUITE": "Disable NULL, EXPORT, RC4, DES, 3DES, anonymous, and non-forward-secret suites. Prefer TLS 1.3 or ECDHE AES-GCM/ChaCha20 suites.",
+    "MISSING_MODERN_TLS": "Enable the required modern TLS protocol version while retaining TLS 1.2 only where compatibility requires it.",
+    "WEAK_HSTS": "Increase Strict-Transport-Security max-age to at least 31536000 seconds and consider includeSubDomains after validation.",
+    "STATIC_IV": "Generate a unique unpredictable IV/nonce per encryption operation and store it with the ciphertext when required.",
+    "STATIC_SALT": "Generate a unique random salt per password or key derivation operation.",
+    "WEAK_KDF": "Use a modern KDF such as Argon2id, scrypt, or PBKDF2 with current iteration guidance and per-secret random salts.",
+    "WEAK_HASH_CRC32_SECURITY": "Use a cryptographic hash or MAC for security-sensitive integrity checks.",
+    "WEAK_JWT_SECRET": "Use a high-entropy JWT secret of at least 32 bytes loaded from a secret manager.",
+    "CONFIG_STORED_SECRET": "Store runtime secrets in a managed secret store and inject them at deployment time.",
+    "MISSING_CSP": "Define a restrictive Content-Security-Policy.",
+    "WEAK_CSP": "Remove unsafe-inline, unsafe-eval, and broad wildcards from CSP where possible.",
+    "MISSING_X_FRAME_OPTIONS": "Set X-Frame-Options to DENY or SAMEORIGIN, or use CSP frame-ancestors.",
+    "MISSING_X_CONTENT_TYPE": "Set X-Content-Type-Options: nosniff.",
+    "MISSING_REFERRER_POLICY": "Set a privacy-preserving Referrer-Policy.",
+    "MISSING_PERMISSIONS_POLICY": "Set a restrictive Permissions-Policy.",
+    "MISSING_COEP": "Set Cross-Origin-Embedder-Policy where cross-origin isolation is required.",
+    "MISSING_CORP": "Set Cross-Origin-Resource-Policy for sensitive resources.",
+    "MISSING_COOP": "Set Cross-Origin-Opener-Policy: same-origin where appropriate.",
+    "MISSING_CACHE_CONTROL": "Set Cache-Control on sensitive pages, using no-store for authenticated or token-bearing pages.",
+    "WEAK_CACHE_CONTROL": "Set Cache-Control: no-store for sensitive authenticated pages.",
+    "INVALID_X_FRAME_OPTIONS": "Use DENY or SAMEORIGIN for X-Frame-Options.",
     "USES_MD5": "Replace MD5 with SHA-256 or SHA-3.",
     "USES_SHA1": "Replace SHA-1 with SHA-256 or SHA-3.",
     "USES_DES": "Replace DES with AES-256-GCM.",
@@ -411,6 +454,164 @@ REMEDIATION_MAP = {
     "WEAK_TLS": "Upgrade to TLS 1.2 or higher.",
     "SELF_SIGNED": "Use a certificate from a trusted CA.",
 }
+
+FINDING_TITLE_MAP = {
+    "transport:tls_pki_crypto_posture": "TLS and PKI Security Finding",
+    "external_reputation": "Infrastructure Reputation Signal",
+    "WEAK_TLS_VERSION": "Deprecated TLS Protocol Supported",
+    "WEAK_CIPHER_SUITE": "Weak Cipher Suites Enabled",
+    "MISSING_MODERN_TLS": "Modern TLS 1.3 Not Supported",
+    "WEAK_HSTS": "HTTP Strict Transport Security Not Properly Configured",
+    "NO_HSTS": "HTTP Strict Transport Security Not Enabled",
+    "HARDCODED_KEY": "Hardcoded Cryptographic Secret Detected",
+    "STATIC_IV": "Static Initialization Vector Detected",
+    "WEAK_HASH_MD5": "Weak Cryptographic Hash (MD5) Used",
+    "WEAK_HASH_SHA1": "Weak Cryptographic Hash (SHA-1) Used",
+    "EXPIRED_CERT": "Expired X.509 Certificate",
+    "SELF_SIGNED_CERT": "Self-Signed Certificate Presented",
+    "CERT_HOSTNAME_MISMATCH": "Certificate Hostname Validation Failed",
+    "WEAK_CERT_CRYPTO": "Weak Certificate Cryptography Detected",
+    "UNTRUSTED_CERT_CHAIN": "Certificate Trust Validation Failed",
+    "NO_FORWARD_SECRECY": "Forward Secrecy Not Supported",
+    "CERT_NEAR_EXPIRY": "TLS Certificate Near Expiration",
+    "STATIC_SALT": "Static Cryptographic Salt Detected",
+    "WEAK_KDF": "Weak Key Derivation Function Used",
+    "WEAK_HASH_CRC32_SECURITY": "CRC32 Used for Security-Sensitive Logic",
+    "WEAK_JWT_SECRET": "Weak JWT Secret Detected",
+    "CONFIG_STORED_SECRET": "Secret Stored in Configuration File",
+    "WEAK_CIPHER_3DES": "Deprecated Triple DES Cipher Used",
+    "WEAK_CIPHER_RC4": "Deprecated RC4 Cipher Used",
+    "WEAK_CIPHER_BLOWFISH": "Legacy Blowfish Cipher Used",
+    "CBC_WITHOUT_AUTH": "CBC Mode Without Visible Authentication",
+    "INSECURE_RANDOM": "Insecure Random Number Generator Used",
+    "SMALL_RSA_KEY": "Insufficient RSA Key Length",
+    "SMALL_AES_KEY": "Insufficient AES Key Length",
+    "MISSING_CSP": "Missing Content-Security-Policy",
+    "WEAK_CSP": "Weak Content-Security-Policy",
+    "MISSING_X_FRAME_OPTIONS": "Missing X-Frame-Options",
+    "MISSING_X_CONTENT_TYPE": "Missing X-Content-Type-Options",
+    "MISSING_REFERRER_POLICY": "Missing Referrer-Policy",
+    "MISSING_PERMISSIONS_POLICY": "Missing Permissions-Policy",
+    "MISSING_COEP": "Missing Cross-Origin-Embedder-Policy",
+    "MISSING_CORP": "Missing Cross-Origin-Resource-Policy",
+    "MISSING_COOP": "Missing Cross-Origin-Opener-Policy",
+    "MISSING_CACHE_CONTROL": "Missing Cache-Control",
+    "WEAK_CACHE_CONTROL": "Weak Cache-Control on Sensitive Page",
+    "INVALID_X_FRAME_OPTIONS": "Invalid X-Frame-Options Value",
+}
+
+
+def get_finding_title(finding: dict) -> str:
+    explicit = finding.get("title") or finding.get("name")
+    if explicit and not _looks_internal(explicit):
+        return explicit
+    rule_id = finding.get("rule_id") or explicit or "Security Finding"
+    return FINDING_TITLE_MAP.get(rule_id, _humanize_identifier(str(rule_id)))
+
+
+def _looks_internal(value: str) -> bool:
+    text = str(value or "")
+    return text.isupper() or ":" in text or text.endswith("_layer") or text in {"external_reputation", "general:application"}
+
+
+def _humanize_identifier(value: str) -> str:
+    last = value.split(":")[-1] if ":" in value else value
+    words = last.replace("_", " ").replace("-", " ").split()
+    if not words:
+        return "Security Finding"
+    replacements = {"tls": "TLS", "hsts": "HSTS", "md5": "MD5", "sha1": "SHA-1", "x509": "X.509"}
+    return " ".join(replacements.get(word.lower(), word.capitalize()) for word in words)
+
+
+def _format_cvss(value) -> str:
+    if value is None or value == "" or value == "N/A":
+        return "Not Applicable"
+    try:
+        return f"{float(value):.1f}"
+    except (TypeError, ValueError):
+        return "Not Applicable"
+
+
+def _format_confidence(value) -> str:
+    if value is None or value == "":
+        return "High Confidence"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value).replace("_", " ")
+    return f"{round(numeric * 100 if numeric <= 1 else numeric)}%"
+
+
+def _format_evidence(value) -> str:
+    if not value:
+        return "Not Applicable"
+    value = redact_data(value)
+    if isinstance(value, dict):
+        raw = value.get("raw_evidence")
+        if raw:
+            return redact_json_string(raw[0])
+        clean = {key: item for key, item in value.items() if key not in {"rule_id", "scanner", "source_scanner"} and item not in (None, "", [])}
+        return redact_json_string(clean or value)
+    return redact_text(value)
+
+
+def _display_category(finding: dict) -> str:
+    explicit = finding.get("category") or finding.get("evidence", {}).get("category")
+    if explicit:
+        return str(explicit)
+    rule_id = str(finding.get("rule_id") or "")
+    if rule_id.startswith("WEAK_HASH"):
+        return "Weak hashing"
+    if rule_id in {"HARDCODED_KEY"}:
+        return "Hardcoded keys"
+    if rule_id == "INSECURE_RANDOM":
+        return "Insecure randomness"
+    if rule_id in {"STATIC_IV", "STATIC_SALT", "WEAK_JWT_SECRET", "CONFIG_STORED_SECRET"}:
+        return "Poor key management"
+    if rule_id in {"WEAK_TLS_VERSION", "WEAK_CIPHER_SUITE", "MISSING_MODERN_TLS", "NO_FORWARD_SECRECY", "NO_HSTS", "WEAK_HSTS"}:
+        return "TLS misconfiguration"
+    if rule_id.startswith("MISSING_") or rule_id in {"WEAK_CSP", "WEAK_CACHE_CONTROL", "INVALID_X_FRAME_OPTIONS"}:
+        return "Missing secure headers"
+    if rule_id.startswith("WEAK_CIPHER") or rule_id in {"CBC_WITHOUT_AUTH", "WEAK_KDF", "SMALL_RSA_KEY", "SMALL_AES_KEY"}:
+        return "Weak cryptographic modes"
+    return "Security finding"
+
+
+def _format_mapping(finding: dict) -> str:
+    cwes = finding.get("cwe_ids") or finding.get("compliance_mapping", {}).get("cwe_ids") or []
+    owasp = finding.get("owasp_category") or finding.get("compliance_mapping", {}).get("owasp_category")
+    parts = []
+    if cwes:
+        parts.append(", ".join(cwes))
+    if owasp:
+        parts.append(str(owasp))
+    return " / ".join(parts) if parts else "Not Applicable"
+
+
+def prepare_findings_for_report(vulnerabilities: list[dict]) -> list[dict]:
+    prepared = []
+    for finding in vulnerabilities:
+        item = redact_data(dict(finding))
+        if not isinstance(item.get("evidence"), dict):
+            item["evidence"] = {}
+        item["display_title"] = redact_text(get_finding_title(item))
+        item["display_category"] = _display_category(item)
+        item["display_confidence"] = _format_confidence(item.get("confidence"))
+        item["display_cvss"] = _format_cvss(item.get("cvss_score"))
+        item["display_cve"] = item.get("cve_id") or "Not Applicable"
+        item["display_evidence"] = _format_evidence(item.get("evidence"))
+        item["display_location"] = redact_text(item.get("file_path") or item.get("location") or item.get("target") or "Not Applicable")
+        item["display_explanation"] = redact_text(item.get("explanation") or item.get("description") or "Review the evidence and affected asset.")
+        item["display_mapping"] = _format_mapping(item)
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        item["display_matched_pattern"] = redact_text(evidence.get("matched_pattern") or evidence.get("regex") or "Not Applicable")
+        item["display_column"] = item.get("column_number") or evidence.get("column_number") or "Not Applicable"
+        if not item.get("remediation") and item.get("rule_id"):
+            item["remediation"] = get_remediation(item["rule_id"])
+        item["remediation"] = redact_text(item.get("remediation") or "")
+        item["recommendation"] = redact_text(item.get("recommendation") or "")
+        prepared.append(item)
+    return prepared
 
 
 def get_remediation(rule_id: str) -> str:
@@ -430,9 +631,7 @@ def generate_html_report(
     started_at: Optional[str] = None,
     finished_at: Optional[str] = None,
 ) -> str:
-    for v in vulnerabilities:
-        if not v.get("remediation") and v.get("rule_id"):
-            v["remediation"] = get_remediation(v["rule_id"])
+    vulnerabilities = prepare_findings_for_report(vulnerabilities)
 
     severity_counts = {}
     for v in vulnerabilities:
@@ -448,7 +647,7 @@ def generate_html_report(
     else:
         score_class = "low"
 
-    template = Template(REPORT_TEMPLATE)
+    template = HTML_ENV.from_string(REPORT_TEMPLATE)
     return template.render(
         scan_id=scan_id,
         target=target,
@@ -510,6 +709,7 @@ def build_report_payload(
     started_at=None,
     finished_at=None,
 ) -> dict:
+    vulnerabilities = prepare_findings_for_report(vulnerabilities)
     severity_counts = {}
     for v in vulnerabilities:
         sev = v.get("severity", "Unknown")
@@ -542,6 +742,7 @@ def build_report_payload(
             "Use RSA >= 2048 bits or ECDSA >= P-256",
             "Enable TLS 1.2+ and disable older versions",
             "Enable HSTS with a minimum max-age of 31536000",
+            "Use CA-trusted certificates with correct SANs and automated renewal",
             "Store secrets in a managed vault",
         ],
     }
@@ -613,15 +814,17 @@ def build_report(
 
 
 def generate_markdown_report(payload: dict) -> str:
+    payload = redact_data(payload)
+    ai_insight = payload.get("ai_insight") or {}
     lines = [
         f"# VulNexus Security Report - {payload.get('target', 'Unknown Target')}",
         "",
         f"**Overall Risk:** {payload.get('overall_score', 0)} / 100",
         f"**Verdict:** {payload.get('overall_verdict', 'Low')}",
-        f"**Generated:** {payload.get('generated_at', 'N/A')}",
+        f"**Generated:** {payload.get('generated_at', 'Not Applicable')}",
         "",
         "## Executive Summary",
-        payload.get("ai_insight", {}).get("summary", "No executive summary available."),
+        ai_insight.get("summary", "No executive summary available."),
         "",
         "## Risk Distribution",
         json.dumps(payload.get("severity_counts", {}), indent=2),
@@ -630,11 +833,16 @@ def generate_markdown_report(payload: dict) -> str:
     ]
     for finding in payload.get("vulnerabilities", []):
         lines.extend([
-            f"### {finding.get('rule_id') or 'Finding'}",
+            f"### {finding.get('display_title') or get_finding_title(finding)}",
             f"Severity: {finding.get('severity', 'Unknown')}",
+            f"Confidence: {finding.get('display_confidence') or _format_confidence(finding.get('confidence'))}",
+            f"Affected Asset: {finding.get('display_location') or finding.get('file_path') or payload.get('target', 'Not Applicable')}",
             f"Description: {finding.get('description', '')}",
-            f"Risk: {finding.get('ml_score', 'N/A')}",
-            f"Attack Story: {finding.get('attack_story') or finding.get('knowledge', {}).get('attack', {}).get('attack_story', 'N/A')}",
+            f"Evidence: {finding.get('display_evidence') or _format_evidence(finding.get('evidence'))}",
+            f"Risk: {finding.get('ml_score', 'Not Applicable')}",
+            f"CVE: {finding.get('display_cve') or finding.get('cve_id') or 'Not Applicable'}",
+            f"CVSS: {finding.get('display_cvss') or _format_cvss(finding.get('cvss_score'))}",
+            f"Attack Story: {finding.get('attack_story') or finding.get('knowledge', {}).get('attack', {}).get('attack_story', 'Not Applicable')}",
             f"Mitigation: {finding.get('remediation') or 'Review and remediate.'}",
             "",
         ])
@@ -654,25 +862,28 @@ def generate_markdown_report(payload: dict) -> str:
 
 
 def generate_csv_report(payload: dict, output_path: str) -> str:
+    payload = redact_data(payload)
     with open(output_path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["rule_id", "severity", "description", "risk_score", "cve_id", "cvss_score", "remediation", "file_path", "line_number"])
+        writer.writerow(["finding", "severity", "confidence", "description", "risk_score", "cve", "cvss", "remediation", "affected_asset", "evidence"])
         for finding in payload.get("vulnerabilities", []):
             writer.writerow([
-                finding.get("rule_id"),
+                finding.get("display_title") or get_finding_title(finding),
                 finding.get("severity"),
+                finding.get("display_confidence") or _format_confidence(finding.get("confidence")),
                 finding.get("description"),
                 finding.get("ml_score"),
-                finding.get("cve_id"),
-                finding.get("cvss_score"),
+                finding.get("display_cve") or finding.get("cve_id") or "Not Applicable",
+                finding.get("display_cvss") or _format_cvss(finding.get("cvss_score")),
                 finding.get("remediation"),
-                finding.get("file_path"),
-                finding.get("line_number"),
+                finding.get("display_location") or finding.get("file_path") or "Not Applicable",
+                finding.get("display_evidence") or _format_evidence(finding.get("evidence")),
             ])
     return output_path
 
 
 def generate_docx_report(payload: dict, output_path: str) -> str:
+    payload = redact_data(payload)
     document_xml = _build_docx_document_xml(payload)
     with ZipFile(output_path, "w", compression=ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", _docx_content_types())
@@ -686,6 +897,7 @@ def generate_report_markdown_document(payload: dict) -> str:
 
 
 def export_report_document(payload: dict, output_path: str, format: str) -> str:
+    payload = redact_data(payload)
     report_format = format.lower()
     if report_format == "md":
         with open(output_path, "w", encoding="utf-8") as handle:
@@ -697,7 +909,7 @@ def export_report_document(payload: dict, output_path: str, format: str) -> str:
         return generate_docx_report(payload, output_path)
     if report_format == "json":
         with open(output_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, default=str)
+            json.dump(redact_data(payload), handle, indent=2, default=str)
         return output_path
     if report_format == "html":
         with open(output_path, "w", encoding="utf-8") as handle:
@@ -726,8 +938,9 @@ def _build_docx_document_xml(payload: dict) -> str:
         f"Executive Summary: {payload.get('ai_insight', {}).get('summary', 'No executive summary available.')}",
     ]
     for finding in payload.get("vulnerabilities", [])[:20]:
-        paragraphs.append(f"Finding: {finding.get('rule_id') or 'Finding'} - {finding.get('severity', 'Unknown')}")
+        paragraphs.append(f"Finding: {finding.get('display_title') or get_finding_title(finding)} - {finding.get('severity', 'Unknown')}")
         paragraphs.append(f"Description: {finding.get('description', '')}")
+        paragraphs.append(f"Evidence: {finding.get('display_evidence') or _format_evidence(finding.get('evidence'))}")
         paragraphs.append(f"Mitigation: {finding.get('remediation') or 'Review and remediate.'}")
     body = "".join(f"<w:p><w:r><w:t>{escape(text)}</w:t></w:r></w:p>" for text in paragraphs)
     return f"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>{body}<w:sectPr><w:pgSz w:w=\"12240\" w:h=\"15840\"/><w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\"/></w:sectPr></w:body></w:document>"

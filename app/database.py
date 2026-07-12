@@ -1,5 +1,9 @@
-from sqlalchemy import inspect, text
-from sqlalchemy.schema import CreateColumn
+from pathlib import Path
+
+from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -11,37 +15,38 @@ class Base(DeclarativeBase):
 
 
 def _create_engine(database_url: str):
-    connect_args = {"check_same_thread": False} if database_url.startswith("sqlite+aiosqlite") else {}
-    return create_async_engine(database_url, echo=False, pool_pre_ping=True, connect_args=connect_args)
+    return create_async_engine(database_url, echo=False, pool_pre_ping=True)
 
 
 engine = _create_engine(settings.DATABASE_URL)
 async_session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+def _assert_schema_is_current(sync_connection) -> None:
+    config_path = Path(__file__).resolve().parents[1] / "alembic.ini"
+    alembic_config = Config(str(config_path))
+    script = ScriptDirectory.from_config(alembic_config)
+    expected_heads = set(script.get_heads())
+    current_heads = set(MigrationContext.configure(sync_connection).get_current_heads())
+    if current_heads != expected_heads:
+        current = ", ".join(sorted(current_heads)) or "unversioned"
+        expected = ", ".join(sorted(expected_heads)) or "none"
+        raise RuntimeError(
+            "Database schema is outdated "
+            f"(current: {current}; expected: {expected}). Run: alembic upgrade head"
+        )
+
+
+async def check_schema_current() -> None:
+    async with engine.connect() as conn:
+        await conn.run_sync(_assert_schema_is_current)
+
+
 async def init_db() -> None:
-    from app.models import db_models  # noqa: F401 — register ORM models
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_add_missing_columns)
-
-
-def _add_missing_columns(sync_conn) -> None:
-    inspector = inspect(sync_conn)
-    existing_tables = set(inspector.get_table_names())
-    dialect = sync_conn.dialect
-
-    for table in Base.metadata.sorted_tables:
-        if table.name not in existing_tables:
-            continue
-
-        existing_columns = {column["name"] for column in inspector.get_columns(table.name)}
-        for column in table.columns:
-            if column.name in existing_columns:
-                continue
-            column_sql = str(CreateColumn(column).compile(dialect=dialect)).replace(" NOT NULL", "")
-            sync_conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN {column_sql}'))
+    """Verify connectivity and refuse to run against an outdated schema."""
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT 1"))
+    await check_schema_current()
 
 
 async def close_db() -> None:

@@ -33,11 +33,13 @@ class SecretsScanner(TargetScanner):
                     title=vuln.rule_id,
                     description=vuln.description,
                     severity=vuln.severity,
-                    evidence={"rule_id": vuln.rule_id},
+                    evidence={"rule_id": vuln.rule_id, **vuln.evidence},
                     location=f"{file_path}:{vuln.line_number}" if vuln.line_number else file_path,
-                    confidence=0.95,
+                    confidence=vuln.confidence,
+                    confidence_label=vuln.confidence_label,
+                    remediation=vuln.remediation,
                     raw_data=vuln.model_dump(),
                     target=target.value,
-                    tags=["secrets", "source"],
+                    tags=["secrets", "source", "cryptography"],
                 ))
         return ScannerResult(findings=findings, metadata={"files_scanned": len(source_files)})

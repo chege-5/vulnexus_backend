@@ -1,0 +1,10 @@
+{
+  "url": "https://demo.local/login",
+  "status_code": 200,
+  "headers": {
+    "Content-Security-Policy": "default-src * 'unsafe-inline' 'unsafe-eval'",
+    "Strict-Transport-Security": "max-age=300",
+    "X-Frame-Options": "ALLOWALL",
+    "Cache-Control": "private"
+  }
+}

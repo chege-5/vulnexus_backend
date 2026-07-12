@@ -13,6 +13,7 @@ class SimpleJsonProvider(ProviderAdapter):
     query_param: str = "query"
     item_key: str | None = None
     extra_params: dict[str, Any] = {}
+    allowed_context_params: set[str] = set()
 
     async def lookup(self, client: httpx.AsyncClient, query: str, *, context: dict[str, Any] | None = None, limit: int = 5):
         url = self._build_url(query, context)
@@ -28,7 +29,7 @@ class SimpleJsonProvider(ProviderAdapter):
     async def _request(self, client: httpx.AsyncClient, url: str, query: str, *, context: dict[str, Any] | None = None, limit: int = 5):
         params = {self.query_param: query, **self.extra_params}
         if context:
-            params.update({key: value for key, value in context.items() if value is not None})
+            params.update({key: value for key, value in context.items() if key in self.allowed_context_params and value is not None})
         if self.method.upper() == "POST":
             response = await client.post(url, json=params)
         else:

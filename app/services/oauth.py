@@ -17,15 +17,21 @@ from app.core.http_client import create_async_client, request_with_retry
 from app.config import settings
 from app.models.db_models import GitHubConnection, OAuthAccount, User
 from app.utils.crypto import decrypt_token, encrypt_token
+from app.utils.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 def build_google_auth_url(state: str, redirect_uri: Optional[str] = None) -> str:
     if not settings.GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=501, detail="Google authentication not configured")
 
+    selected_redirect_uri = redirect_uri or settings.GOOGLE_REDIRECT_URI
+    logger.info("Google OAuth auth URL build: redirect_uri=%s", selected_redirect_uri)
     params = {
         "client_id": settings.GOOGLE_CLIENT_ID,
-        "redirect_uri": redirect_uri or settings.GOOGLE_REDIRECT_URI,
+        "redirect_uri": selected_redirect_uri,
         "response_type": "code",
         "scope": "openid email profile",
         "access_type": "offline",
@@ -37,9 +43,11 @@ def build_google_auth_url(state: str, redirect_uri: Optional[str] = None) -> str
 
 
 async def verify_google_token(id_token: str) -> dict:
+    logger.info("Google OAuth token verification started")
     async with create_async_client(timeout=15) as client:
         response = await request_with_retry(client, "GET", f"https://oauth2.googleapis.com/tokeninfo?id_token={id_token}")
         if response is None or response.status_code != 200:
+            logger.warning("Google OAuth token verification failed: tokeninfo returned no valid response")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid Google token",
@@ -47,17 +55,20 @@ async def verify_google_token(id_token: str) -> dict:
 
         data = response.json()
         if data.get("aud") != settings.GOOGLE_CLIENT_ID:
+            logger.warning("Google OAuth token verification failed: audience mismatch")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token audience mismatch",
             )
 
         if data.get("email_verified") not in (True, "true", "True", "1"):
+            logger.warning("Google OAuth token verification failed: email is not verified")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Google account email is not verified",
             )
 
+        logger.info("Google OAuth token verification succeeded: email=%s", data.get("email", ""))
         return {
             "provider_user_id": data["sub"],
             "email": data.get("email", ""),
@@ -71,6 +82,8 @@ async def exchange_google_code(code: str, redirect_uri: Optional[str] = None) ->
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=501, detail="Google OAuth is not configured")
 
+    selected_redirect_uri = redirect_uri or settings.GOOGLE_REDIRECT_URI
+    logger.info("Google OAuth code exchange started: redirect_uri=%s", selected_redirect_uri)
     async with create_async_client(timeout=20) as client:
         token_response = await request_with_retry(
             client,
@@ -81,24 +94,37 @@ async def exchange_google_code(code: str, redirect_uri: Optional[str] = None) ->
                 "client_secret": settings.GOOGLE_CLIENT_SECRET,
                 "code": code,
                 "grant_type": "authorization_code",
-                "redirect_uri": redirect_uri or settings.GOOGLE_REDIRECT_URI,
+                "redirect_uri": selected_redirect_uri,
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if token_response is None or token_response.status_code != 200:
+            detail = "Failed to exchange Google code"
+            status_code = token_response.status_code if token_response is not None else "no_response"
+            if token_response is not None:
+                try:
+                    error_payload = token_response.json()
+                    error_description = error_payload.get("error_description") or error_payload.get("error")
+                    if error_description:
+                        detail = f"Google OAuth exchange failed: {error_description}"
+                except Exception:
+                    pass
+            logger.warning("Google OAuth code exchange failed: status=%s", status_code)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Failed to exchange Google code",
+                detail=detail,
             )
 
         token_data = token_response.json()
         id_token = token_data.get("id_token")
         if not id_token:
+            logger.warning("Google OAuth code exchange failed: ID token missing")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Google token exchange did not return an ID token",
             )
 
+        logger.info("Google OAuth code exchange succeeded; verifying profile")
         identity = await verify_google_token(id_token)
         identity["access_token"] = token_data.get("access_token")
         identity["refresh_token"] = token_data.get("refresh_token")
@@ -245,6 +271,7 @@ async def oauth_login_or_register(
     name: str,
     avatar_url: str = "",
     access_token: Optional[str] = None,
+    refresh_token: Optional[str] = None,
     github_username: Optional[str] = None,
     metadata: Optional[dict] = None,
     current_user: Optional[User] = None,
@@ -258,14 +285,17 @@ async def oauth_login_or_register(
     oauth_account = result.scalar_one_or_none()
 
     if oauth_account:
+        logger.info("OAuth account found: provider=%s provider_user_id=%s", provider, provider_user_id)
         user_result = await db.execute(select(User).where(User.id == oauth_account.user_id))
         user = user_result.scalar_one_or_none()
         if not user:
             raise HTTPException(status_code=500, detail="User not found for OAuth account")
         if current_user and user.id != current_user.id:
+            logger.warning("OAuth link rejected: provider=%s provider_user_id=%s already linked", provider, provider_user_id)
             raise HTTPException(status_code=409, detail="This provider account is already linked to another user")
 
         oauth_account.access_token = access_token or oauth_account.access_token
+        oauth_account.refresh_token = refresh_token or oauth_account.refresh_token
         oauth_account.expires_at = datetime.now(timezone.utc) + timedelta(days=365)
         user.last_login = datetime.now(timezone.utc)
         user.avatar_url = avatar_url or user.avatar_url
@@ -273,7 +303,8 @@ async def oauth_login_or_register(
             await _upsert_github_connection(db, user.id, github_user_id=provider_user_id, github_username=github_username, access_token=access_token, metadata=metadata)
 
         await db.commit()
-        return user, create_access_token({"sub": str(user.id)})
+        logger.info("OAuth existing provider login completed: provider=%s user_id=%s", provider, user.id)
+        return user, create_access_token({"sub": str(user.id), "role": user.role})
 
     target_user = current_user
     if target_user is None:
@@ -281,6 +312,7 @@ async def oauth_login_or_register(
         target_user = email_result.scalar_one_or_none()
 
     if target_user:
+        logger.info("OAuth email match found: provider=%s user_id=%s email=%s", provider, target_user.id, target_user.email)
         existing_link_result = await db.execute(
             select(OAuthAccount).where(
                 OAuthAccount.user_id == target_user.id,
@@ -289,16 +321,20 @@ async def oauth_login_or_register(
         )
         existing_link = existing_link_result.scalar_one_or_none()
         if existing_link is None:
+            logger.info("OAuth account link created: provider=%s user_id=%s", provider, target_user.id)
             db.add(OAuthAccount(
                 user_id=target_user.id,
                 provider=provider,
                 provider_user_id=provider_user_id,
                 access_token=access_token,
+                refresh_token=refresh_token,
                 expires_at=datetime.now(timezone.utc) + timedelta(days=365),
             ))
         else:
+            logger.info("OAuth account link updated: provider=%s user_id=%s", provider, target_user.id)
             existing_link.provider_user_id = provider_user_id
             existing_link.access_token = access_token or existing_link.access_token
+            existing_link.refresh_token = refresh_token or existing_link.refresh_token
             existing_link.expires_at = datetime.now(timezone.utc) + timedelta(days=365)
 
         target_user.avatar_url = avatar_url or target_user.avatar_url
@@ -307,8 +343,10 @@ async def oauth_login_or_register(
             await _upsert_github_connection(db, target_user.id, github_user_id=provider_user_id, github_username=github_username, access_token=access_token, metadata=metadata)
 
         await db.commit()
-        return target_user, create_access_token({"sub": str(target_user.id)})
+        logger.info("OAuth email-linked login completed: provider=%s user_id=%s", provider, target_user.id)
+        return target_user, create_access_token({"sub": str(target_user.id), "role": target_user.role})
 
+    logger.info("OAuth user creation started: provider=%s email=%s", provider, email.lower())
     user = User(
         email=email.lower(),
         name=name,
@@ -328,6 +366,7 @@ async def oauth_login_or_register(
         provider=provider,
         provider_user_id=provider_user_id,
         access_token=access_token,
+        refresh_token=refresh_token,
         expires_at=datetime.now(timezone.utc) + timedelta(days=365),
     ))
 
@@ -336,7 +375,8 @@ async def oauth_login_or_register(
 
     await db.commit()
     await db.refresh(user)
-    return user, create_access_token({"sub": str(user.id)})
+    logger.info("OAuth user creation completed: provider=%s user_id=%s", provider, user.id)
+    return user, create_access_token({"sub": str(user.id), "role": user.role})
 
 
 async def _upsert_github_connection(

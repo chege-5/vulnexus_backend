@@ -1,0 +1,1058 @@
+version: "1.0"
+
+categories:
+  weak_hashing:
+    - id: WEAK_HASH_MD5_PY_HASHLIB
+      title: hashlib.md5() used
+      category: Weak hashing
+      severity: Medium
+      confidence: 0.90
+      cvss: 5.3
+      languages: [python]
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      regex: "\\bhashlib\\.md5\\s*\\("
+      recommendation: Use SHA-256, SHA-3, or a password-specific KDF for password storage.
+      references: [https://cwe.mitre.org/data/definitions/327.html, https://owasp.org/Top10/A02_2021-Cryptographic_Failures/]
+      enabled: true
+      crypto_feature: MD5
+    - id: WEAK_HASH_MD5
+      title: MD5 hash function used
+      category: Weak hashing
+      severity: Medium
+      confidence: 0.86
+      cvss: 5.3
+      languages: [python, php, ruby, c, cpp, generic]
+      regex: "(?<![\\w.])md5\\s*\\("
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Replace MD5 with SHA-256/SHA-3, or a password KDF where passwords are involved.
+      references: [https://www.rfc-editor.org/rfc/rfc6151]
+      enabled: true
+      crypto_feature: MD5
+    - id: WEAK_HASH_SHA1_PY_HASHLIB
+      title: hashlib.sha1() used
+      category: Weak hashing
+      severity: Medium
+      confidence: 0.90
+      cvss: 5.3
+      languages: [python]
+      regex: "\\bhashlib\\.sha1\\s*\\("
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Replace SHA-1 with SHA-256 or SHA-3 for security-sensitive hashing.
+      references: [https://cwe.mitre.org/data/definitions/327.html]
+      enabled: true
+      crypto_feature: SHA1
+    - id: WEAK_HASH_SHA1
+      title: SHA-1 hash function used
+      category: Weak hashing
+      severity: Medium
+      confidence: 0.86
+      cvss: 5.3
+      languages: [python, php, ruby, c, cpp, generic]
+      regex: "(?<![\\w.])sha1\\s*\\("
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Replace SHA-1 with SHA-256 or SHA-3.
+      references: [https://shattered.io/]
+      enabled: true
+      crypto_feature: SHA1
+    - id: WEAK_HASH_CRYPTOJS_MD5
+      title: CryptoJS.MD5 used
+      category: Weak hashing
+      severity: Medium
+      confidence: 0.90
+      cvss: 5.3
+      languages: [javascript, typescript]
+      regex: "\\bCryptoJS\\.MD5\\s*\\("
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use Web Crypto SHA-256/SHA-384 or a password KDF.
+      references: [https://owasp.org/Top10/A02_2021-Cryptographic_Failures/]
+      enabled: true
+      crypto_feature: MD5
+    - id: WEAK_HASH_CRYPTOJS_SHA1
+      title: CryptoJS.SHA1 used
+      category: Weak hashing
+      severity: Medium
+      confidence: 0.90
+      cvss: 5.3
+      languages: [javascript, typescript]
+      regex: "\\bCryptoJS\\.SHA1\\s*\\("
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use Web Crypto SHA-256/SHA-384 or a password KDF.
+      references: [https://cwe.mitre.org/data/definitions/327.html]
+      enabled: true
+      crypto_feature: SHA1
+    - id: WEAK_HASH_JAVA_MD5
+      title: Java MessageDigest MD5 used
+      category: Weak hashing
+      severity: Medium
+      confidence: 0.92
+      cvss: 5.3
+      languages: [java, kotlin]
+      regex: "MessageDigest\\.getInstance\\(\\s*[\"']MD5[\"']\\s*\\)"
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use SHA-256/SHA-384 or a password-specific KDF.
+      references: [https://cwe.mitre.org/data/definitions/327.html]
+      enabled: true
+      crypto_feature: MD5
+    - id: WEAK_HASH_JAVA_SHA1
+      title: Java MessageDigest SHA-1 used
+      category: Weak hashing
+      severity: Medium
+      confidence: 0.92
+      cvss: 5.3
+      languages: [java, kotlin]
+      regex: "MessageDigest\\.getInstance\\(\\s*[\"']SHA-?1[\"']\\s*\\)"
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use SHA-256/SHA-384 or a password-specific KDF.
+      references: [https://cwe.mitre.org/data/definitions/327.html]
+      enabled: true
+      crypto_feature: SHA1
+    - id: WEAK_HASH_NODE_MD5
+      title: Node crypto.createHash('md5') used
+      category: Weak hashing
+      severity: Medium
+      confidence: 0.90
+      cvss: 5.3
+      languages: [javascript, typescript]
+      regex: "crypto\\.createHash\\(\\s*[\"']md5[\"']\\s*\\)"
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use sha256/sha384 or a password KDF for password storage.
+      references: [https://nodejs.org/api/crypto.html]
+      enabled: true
+      crypto_feature: MD5
+    - id: WEAK_HASH_NODE_SHA1
+      title: Node crypto.createHash('sha1') used
+      category: Weak hashing
+      severity: Medium
+      confidence: 0.90
+      cvss: 5.3
+      languages: [javascript, typescript]
+      regex: "crypto\\.createHash\\(\\s*[\"']sha1[\"']\\s*\\)"
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use sha256/sha384 or a password KDF for password storage.
+      references: [https://nodejs.org/api/crypto.html]
+      enabled: true
+      crypto_feature: SHA1
+    - id: WEAK_HASH_CRC32_SECURITY
+      title: CRC32 used in security-sensitive logic
+      category: Weak hashing
+      severity: Low
+      confidence: 0.75
+      cvss: 4.0
+      languages: [python, java, javascript, php, generic]
+      regex: "\\bCRC32\\b|\\bcrc32\\s*\\(|zlib\\.crc32\\s*\\("
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use a cryptographic hash or MAC for integrity, token, or signature decisions.
+      references: [https://cwe.mitre.org/data/definitions/327.html]
+      enabled: true
+      crypto_feature: CRC32
+
+  hardcoded_keys:
+    - id: HARDCODED_AWS_ACCESS_KEY
+      title: AWS access key ID detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.97
+      cvss: 9.1
+      languages: [generic]
+      regex: "(?:AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{12,}"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Remove the key, rotate it in AWS IAM, and inject credentials from a managed secret store.
+      references: [https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html]
+      enabled: true
+    - id: HARDCODED_AWS_SECRET_KEY
+      title: AWS secret access key detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.96
+      cvss: 9.1
+      languages: [generic]
+      regex: "(?:AWS_)?SECRET_ACCESS_KEY\\s*[:=]\\s*[\"']?[A-Za-z0-9/+=]{32,}"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Rotate the AWS secret and move it to a secret manager or workload identity.
+      references: [https://cwe.mitre.org/data/definitions/798.html]
+      enabled: true
+    - id: HARDCODED_AZURE_CLIENT_SECRET
+      title: Azure client secret detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.94
+      cvss: 9.1
+      languages: [generic]
+      regex: "AZURE_[A-Z0-9_]*(?:CLIENT_)?SECRET\\s*[:=]\\s*[\"']?[^\"'\\s]{12,}"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Rotate the Azure credential and use Key Vault or managed identity.
+      references: [https://learn.microsoft.com/azure/key-vault/]
+      enabled: true
+    - id: HARDCODED_AZURE_TENANT_SECRET
+      title: Azure tenant secret detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.92
+      cvss: 9.1
+      languages: [generic]
+      regex: "AZURE_[A-Z0-9_]*TENANT[A-Z0-9_]*SECRET\\s*[:=]\\s*[\"']?[^\"'\\s]{12,}"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Store tenant secrets in Azure Key Vault and rotate exposed values.
+      references: [https://cwe.mitre.org/data/definitions/798.html]
+      enabled: true
+    - id: HARDCODED_GCP_PRIVATE_KEY
+      title: GCP private key detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.96
+      cvss: 9.1
+      languages: [generic]
+      regex: "(?:GCP|GOOGLE|FIREBASE)?_?PRIVATE_KEY\\s*[:=]\\s*[\"']?[^\"']{20,}"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Revoke the service account key and use workload identity or Secret Manager.
+      references: [https://cloud.google.com/secret-manager]
+      enabled: true
+    - id: HARDCODED_GCP_PRIVATE_KEY_ID
+      title: GCP private key ID detected
+      category: Hardcoded keys
+      severity: High
+      confidence: 0.92
+      cvss: 7.5
+      languages: [generic]
+      regex: "(?:GCP|GOOGLE|FIREBASE)?_?PRIVATE_KEY_ID\\s*[:=]\\s*[\"']?[A-Za-z0-9_-]{12,}"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Treat exposed key IDs as sensitive context and rotate related service account keys.
+      references: [https://cloud.google.com/iam/docs/keys-create-delete]
+      enabled: true
+    - id: HARDCODED_JWT_SECRET
+      title: JWT secret detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.94
+      cvss: 9.1
+      languages: [generic]
+      regex: "(?:jwt|jws)[_\\-]?secret\\s*[:=]\\s*[\"'][^\"']{8,}[\"']"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Move JWT signing secrets to a secret manager and rotate tokens after replacement.
+      references: [https://cwe.mitre.org/data/definitions/798.html]
+      enabled: true
+    - id: HARDCODED_OAUTH_SECRET
+      title: OAuth client secret detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.94
+      cvss: 9.1
+      languages: [generic]
+      regex: "(?:oauth|client)[_\\-]?(?:secret|token)\\s*[:=]\\s*[\"'][^\"']{12,}[\"']"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Rotate the OAuth secret and load it only from deployment-time secret injection.
+      references: [https://oauth.net/2/]
+      enabled: true
+    - id: HARDCODED_BEARER_TOKEN
+      title: Bearer token detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.95
+      cvss: 9.1
+      languages: [generic]
+      regex: "Authorization\\s*[:=]\\s*[\"']?Bearer\\s+[A-Za-z0-9._\\-]{20,}"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Revoke the bearer token and use short-lived tokens issued at runtime.
+      references: [https://cwe.mitre.org/data/definitions/798.html]
+      enabled: true
+    - id: HARDCODED_API_KEY
+      title: API key detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.90
+      cvss: 8.1
+      languages: [generic]
+      regex: "(?:api[_\\-]?(?:key|token)|access[_\\-]?token|secret[_\\-]?key)\\s*[:=]\\s*[\"']?[A-Za-z0-9+/=._\\-]{12,}"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Rotate the key and store it in a managed secret store.
+      references: [https://owasp.org/www-project-top-ten/]
+      enabled: true
+    - id: HARDCODED_SSH_PRIVATE_KEY
+      title: SSH private key block detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.99
+      cvss: 9.8
+      languages: [generic]
+      regex: "-----BEGIN\\s+OPENSSH\\s+PRIVATE\\s+KEY-----|-----BEGIN\\s+DSA\\s+PRIVATE\\s+KEY-----"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Remove the key, rotate it, and ensure private keys are never committed.
+      references: [https://cwe.mitre.org/data/definitions/798.html]
+      enabled: true
+    - id: HARDCODED_RSA_PRIVATE_KEY
+      title: RSA private key block detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.99
+      cvss: 9.8
+      languages: [generic]
+      regex: "-----BEGIN\\s+RSA\\s+PRIVATE\\s+KEY-----|-----BEGIN\\s+PRIVATE\\s+KEY-----"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Revoke and replace the private key; use secure key storage outside source control.
+      references: [https://cwe.mitre.org/data/definitions/798.html]
+      enabled: true
+    - id: HARDCODED_EC_PRIVATE_KEY
+      title: EC private key block detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.99
+      cvss: 9.8
+      languages: [generic]
+      regex: "-----BEGIN\\s+EC\\s+PRIVATE\\s+KEY-----"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Revoke and replace the EC private key; use secure key storage outside source control.
+      references: [https://cwe.mitre.org/data/definitions/798.html]
+      enabled: true
+    - id: HARDCODED_DATABASE_URL
+      title: Database URL with credentials detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.95
+      cvss: 9.1
+      languages: [generic]
+      regex: "(?:DATABASE_URL\\s*[:=]\\s*)?[A-Za-z][A-Za-z0-9+.-]*://[^:\\s]+:[^@\\s]+@[^\"'\\s]+"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Move database credentials to secret storage and rotate exposed passwords.
+      references: [https://cwe.mitre.org/data/definitions/798.html]
+      enabled: true
+    - id: HARDCODED_MONGO_URI
+      title: MongoDB URI with credentials detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.95
+      cvss: 9.1
+      languages: [generic]
+      regex: "mongodb(?:\\+srv)?://[^:\\s]+:[^@\\s]+@[^\"'\\s]+"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Rotate MongoDB credentials and inject the URI at runtime.
+      references: [https://www.mongodb.com/docs/manual/reference/connection-string/]
+      enabled: true
+    - id: HARDCODED_POSTGRES_URI
+      title: PostgreSQL URI with credentials detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.95
+      cvss: 9.1
+      languages: [generic]
+      regex: "postgres(?:ql)?://[^:\\s]+:[^@\\s]+@[^\"'\\s]+"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Rotate PostgreSQL credentials and load them from secret storage.
+      references: [https://www.postgresql.org/docs/current/libpq-connect.html]
+      enabled: true
+    - id: HARDCODED_MYSQL_URI
+      title: MySQL URI with credentials detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.95
+      cvss: 9.1
+      languages: [generic]
+      regex: "mysql://[^:\\s]+:[^@\\s]+@[^\"'\\s]+"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Rotate MySQL credentials and load them from secret storage.
+      references: [https://dev.mysql.com/doc/connector-python/en/connector-python-connectargs.html]
+      enabled: true
+    - id: HARDCODED_REDIS_PASSWORD
+      title: Redis password detected
+      category: Hardcoded keys
+      severity: Critical
+      confidence: 0.92
+      cvss: 8.1
+      languages: [generic]
+      regex: "(?:REDIS_PASSWORD\\s*[:=]\\s*[^\"'\\s]{8,}|redis://:[^@\\s]+@[^\"'\\s]+)"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Rotate the Redis password and inject it from a secure secret provider.
+      references: [https://redis.io/docs/latest/operate/oss_and_stack/management/security/]
+      enabled: true
+
+  insecure_randomness:
+    - id: INSECURE_RANDOM_PY_RANDOM
+      title: Python random.random used for security-sensitive value
+      category: Insecure randomness
+      severity: Medium
+      confidence: 0.85
+      cvss: 5.3
+      languages: [python]
+      regex: "\\brandom\\.random\\s*\\("
+      cwe: [CWE-330]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use the Python secrets module or os.urandom for tokens, nonces, and secrets.
+      references: [https://docs.python.org/3/library/secrets.html]
+      enabled: true
+    - id: INSECURE_RANDOM_PY_RANDINT
+      title: Python random.randint used
+      category: Insecure randomness
+      severity: Medium
+      confidence: 0.83
+      cvss: 5.3
+      languages: [python]
+      regex: "\\brandom\\.randint\\s*\\("
+      cwe: [CWE-330]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use secrets.randbelow or another cryptographically secure RNG.
+      references: [https://cwe.mitre.org/data/definitions/330.html]
+      enabled: true
+    - id: INSECURE_RANDOM_PY_CHOICE
+      title: Python random.choice used
+      category: Insecure randomness
+      severity: Medium
+      confidence: 0.83
+      cvss: 5.3
+      languages: [python]
+      regex: "\\brandom\\.choice\\s*\\("
+      cwe: [CWE-330]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use secrets.choice for security-sensitive selection.
+      references: [https://docs.python.org/3/library/secrets.html]
+      enabled: true
+    - id: INSECURE_RANDOM_JS_MATH_RANDOM
+      title: JavaScript Math.random used
+      category: Insecure randomness
+      severity: Medium
+      confidence: 0.85
+      cvss: 5.3
+      languages: [javascript, typescript]
+      regex: "\\bMath\\.random\\s*\\("
+      cwe: [CWE-330]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use Web Crypto getRandomValues or crypto.randomBytes.
+      references: [https://developer.mozilla.org/docs/Web/API/Crypto/getRandomValues]
+      enabled: true
+    - id: INSECURE_RANDOM_JAVA_UTIL_RANDOM
+      title: java.util.Random used
+      category: Insecure randomness
+      severity: Medium
+      confidence: 0.84
+      cvss: 5.3
+      languages: [java, kotlin]
+      regex: "\\bjava\\.util\\.Random\\b"
+      cwe: [CWE-330]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use java.security.SecureRandom for security-sensitive randomness.
+      references: [https://docs.oracle.com/en/java/javase/]
+      enabled: true
+    - id: INSECURE_RANDOM_JAVA_NEW_RANDOM
+      title: Java new Random() used
+      category: Insecure randomness
+      severity: Medium
+      confidence: 0.84
+      cvss: 5.3
+      languages: [java, kotlin]
+      regex: "\\bnew\\s+Random\\s*\\("
+      cwe: [CWE-330]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use SecureRandom for nonces, session IDs, reset links, and tokens.
+      references: [https://cwe.mitre.org/data/definitions/330.html]
+      enabled: true
+    - id: INSECURE_RANDOM_PHP_RAND
+      title: PHP rand() used
+      category: Insecure randomness
+      severity: Medium
+      confidence: 0.82
+      cvss: 5.3
+      languages: [php]
+      regex: "(?<![\\w.])rand\\s*\\("
+      cwe: [CWE-330]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use random_int or random_bytes for security-sensitive randomness.
+      references: [https://www.php.net/manual/en/function.random-int.php]
+      enabled: true
+    - id: INSECURE_RANDOM_PHP_MT_RAND
+      title: PHP mt_rand() used
+      category: Insecure randomness
+      severity: Medium
+      confidence: 0.82
+      cvss: 5.3
+      languages: [php]
+      regex: "\\bmt_rand\\s*\\("
+      cwe: [CWE-330]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use random_int or random_bytes.
+      references: [https://cwe.mitre.org/data/definitions/330.html]
+      enabled: true
+    - id: INSECURE_RANDOM_PHP_SRAND
+      title: PHP srand() used
+      category: Insecure randomness
+      severity: Low
+      confidence: 0.78
+      cvss: 4.0
+      languages: [php]
+      regex: "\\bsrand\\s*\\("
+      cwe: [CWE-330]
+      owasp: A02 Cryptographic Failures
+      recommendation: Avoid predictable seeding and use cryptographic RNG APIs.
+      references: [https://cwe.mitre.org/data/definitions/330.html]
+      enabled: true
+    - id: INSECURE_RANDOM_GO_MATH_RAND
+      title: Go math/rand used
+      category: Insecure randomness
+      severity: Medium
+      confidence: 0.84
+      cvss: 5.3
+      languages: [go]
+      regex: "(?:import|from)\\s+[\"']?math/rand[\"']?|\\brand\\.(?:Int|Intn|Float)"
+      cwe: [CWE-330]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use crypto/rand for security-sensitive randomness.
+      references: [https://pkg.go.dev/crypto/rand]
+      enabled: true
+    - id: INSECURE_RANDOM_WEAK_UUID_TOKEN
+      title: UUID used to generate security token
+      category: Insecure randomness
+      severity: Low
+      confidence: 0.70
+      cvss: 4.0
+      languages: [python, javascript, java, generic]
+      regex: "uuid\\.uuid[14]\\s*\\(\\s*\\).*(?:token|session|secret|password|auth)"
+      cwe: [CWE-330]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use CSPRNG-generated tokens with enough entropy and no predictable components.
+      references: [https://cwe.mitre.org/data/definitions/330.html]
+      enabled: true
+    - id: INSECURE_RANDOM_TIMESTAMP_TOKEN
+      title: Timestamp used in token generation
+      category: Insecure randomness
+      severity: Low
+      confidence: 0.70
+      cvss: 4.0
+      languages: [python, javascript, java, generic]
+      regex: "(?:Date\\.now\\s*\\(|System\\.currentTimeMillis\\s*\\(|time(?:stamp)?\\s*\\(\\s*\\)).*(?:token|session|secret|password|auth)"
+      cwe: [CWE-330]
+      owasp: A02 Cryptographic Failures
+      recommendation: Do not rely on timestamps for token entropy; use a CSPRNG.
+      references: [https://cwe.mitre.org/data/definitions/330.html]
+      enabled: true
+
+  poor_key_management:
+    - id: STATIC_IV
+      title: Static initialization vector detected
+      category: Poor key management
+      severity: High
+      confidence: 0.90
+      cvss: 7.5
+      languages: [python, java, javascript, yaml, json, generic]
+      regex: "\\biv\\s*[:=]\\s*(?:b?[\"'][^\"']{8,}[\"']|bytes\\.fromhex\\([\"'][0-9a-f]{16,}[\"']\\))"
+      cwe: [CWE-329]
+      owasp: A02 Cryptographic Failures
+      recommendation: Generate a unique unpredictable IV or nonce per encryption operation.
+      references: [https://cwe.mitre.org/data/definitions/329.html]
+      enabled: true
+      crypto_feature: static-iv
+    - id: STATIC_SALT
+      title: Static salt detected
+      category: Poor key management
+      severity: Medium
+      confidence: 0.82
+      cvss: 5.3
+      languages: [python, java, javascript, yaml, json, generic]
+      regex: "\\bsalt\\s*[:=]\\s*(?:b?[\"'][^\"']{6,}[\"']|bytes\\.fromhex\\([\"'][0-9a-f]{12,}[\"']\\))"
+      cwe: [CWE-760]
+      owasp: A02 Cryptographic Failures
+      recommendation: Generate a unique random salt per password hash or key derivation operation.
+      references: [https://cwe.mitre.org/data/definitions/760.html]
+      enabled: true
+      crypto_feature: static-salt
+    - id: WEAK_PBKDF2_ITERATIONS
+      title: Weak PBKDF2 iteration count
+      category: Poor key management
+      severity: Medium
+      confidence: 0.84
+      cvss: 5.3
+      languages: [python, java, javascript, generic]
+      regex: "PBKDF2.*?(?:iterations|count)\\s*[:=]\\s*([1-9][0-9]{0,4})"
+      cwe: [CWE-916]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use current PBKDF2 iteration guidance, or Argon2id/scrypt with random salts.
+      references: [https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html]
+      enabled: true
+      numeric_group_below: 100000
+    - id: WEAK_BCRYPT_ROUNDS
+      title: Weak bcrypt cost factor
+      category: Poor key management
+      severity: Medium
+      confidence: 0.84
+      cvss: 5.3
+      languages: [python, javascript, ruby, generic]
+      regex: "bcrypt\\.(?:gensalt|hashpw)\\([^)]*(?:rounds|cost)\\s*=\\s*([1-9])\\b"
+      cwe: [CWE-916]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use bcrypt cost 12 or higher, tuned to production latency.
+      references: [https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html]
+      enabled: true
+      numeric_group_below: 12
+    - id: WEAK_JWT_SECRET
+      title: Weak JWT secret length
+      category: Poor key management
+      severity: High
+      confidence: 0.92
+      cvss: 7.5
+      languages: [generic]
+      regex: "(?:jwt|jws)[_\\-]?secret\\s*[:=]\\s*[\"'][^\"']{1,15}[\"']"
+      cwe: [CWE-326, CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Use a high-entropy JWT secret of at least 32 bytes from a secret manager.
+      references: [https://cwe.mitre.org/data/definitions/326.html]
+      enabled: true
+    - id: EMBEDDED_ENCRYPTION_PASSWORD
+      title: Embedded encryption password
+      category: Poor key management
+      severity: High
+      confidence: 0.88
+      cvss: 7.5
+      languages: [generic]
+      regex: "(?:encryption|encrypt|decrypt)[_\\-]?(?:password|passphrase)\\s*[:=]\\s*[\"'][^\"']{8,}[\"']"
+      cwe: [CWE-798]
+      owasp: A02 Cryptographic Failures
+      recommendation: Load encryption passwords from a secret manager and rotate exposed material.
+      references: [https://cwe.mitre.org/data/definitions/798.html]
+      enabled: true
+    - id: HARDCODED_AES_KEY
+      title: Hardcoded AES key
+      category: Poor key management
+      severity: High
+      confidence: 0.88
+      cvss: 7.5
+      languages: [python, java, javascript, generic]
+      regex: "(?:aes[_\\-]?key|key)\\s*[:=]\\s*(?:b?[\"'][A-Za-z0-9+/=]{16,}[\"'])"
+      cwe: [CWE-321]
+      owasp: A02 Cryptographic Failures
+      recommendation: Generate encryption keys securely and manage them through KMS or a vault.
+      references: [https://cwe.mitre.org/data/definitions/321.html]
+      enabled: true
+    - id: MISSING_VAULT_USAGE_HINT
+      title: Secret-like config without vault usage
+      category: Poor key management
+      severity: Low
+      confidence: 0.60
+      cvss: 3.1
+      languages: [yaml, json, shell, generic]
+      regex: "(?:secret|password|token|api[_-]?key)\\s*[:=]\\s*[\"']?[^\"'\\s]{8,}"
+      cwe: [CWE-798]
+      owasp: A07 Identification and Authentication Failures
+      recommendation: Prefer vault/KMS references over literal secret values in configuration.
+      references: [https://cwe.mitre.org/data/definitions/798.html]
+      enabled: true
+      config_only: true
+
+  tls_misconfiguration:
+    - id: TLS10_ENABLED_LITERAL
+      title: TLS 1.0 enabled in configuration
+      category: TLS misconfiguration
+      severity: High
+      confidence: 0.80
+      cvss: 7.4
+      languages: [yaml, json, nginx, apache, generic]
+      regex: "TLSv?1(?:\\.0)?\\b"
+      cwe: [CWE-326]
+      owasp: A02 Cryptographic Failures
+      recommendation: Disable TLS 1.0 and require TLS 1.2 or newer.
+      references: [https://www.rfc-editor.org/rfc/rfc8996]
+      enabled: true
+    - id: TLS11_ENABLED_LITERAL
+      title: TLS 1.1 enabled in configuration
+      category: TLS misconfiguration
+      severity: High
+      confidence: 0.80
+      cvss: 7.4
+      languages: [yaml, json, nginx, apache, generic]
+      regex: "TLSv?1\\.1\\b"
+      cwe: [CWE-326]
+      owasp: A02 Cryptographic Failures
+      recommendation: Disable TLS 1.1 and require TLS 1.2 or newer.
+      references: [https://www.rfc-editor.org/rfc/rfc8996]
+      enabled: true
+    - id: EXPIRED_CERT_LITERAL
+      title: Expired certificate marker detected
+      category: TLS misconfiguration
+      severity: Critical
+      confidence: 0.80
+      cvss: 9.1
+      languages: [generic]
+      regex: "\\bexpired_certificate\\b|\\bcertificate_expired\\b|\\bexpired cert(?:ificate)?\\b"
+      cwe: [CWE-324]
+      owasp: A05 Security Misconfiguration
+      recommendation: Renew expired certificates and automate certificate lifecycle monitoring.
+      references: [https://cwe.mitre.org/data/definitions/324.html]
+      enabled: true
+    - id: SELF_SIGNED_CERT_LITERAL
+      title: Self-signed certificate marker detected
+      category: TLS misconfiguration
+      severity: High
+      confidence: 0.80
+      cvss: 7.4
+      languages: [generic]
+      regex: "\\bself[_ -]?signed\\b"
+      cwe: [CWE-295]
+      owasp: A05 Security Misconfiguration
+      recommendation: Use CA-trusted certificates for production endpoints.
+      references: [https://cwe.mitre.org/data/definitions/295.html]
+      enabled: true
+    - id: WEAK_TLS_RSA_BITS_LITERAL
+      title: Weak TLS RSA key size marker
+      category: TLS misconfiguration
+      severity: High
+      confidence: 0.78
+      cvss: 7.4
+      languages: [generic]
+      regex: "(?:rsa|public_key_bits)\\s*[:=]\\s*(1024|512)"
+      cwe: [CWE-326]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use RSA keys of at least 2048 bits for TLS certificates.
+      references: [https://cwe.mitre.org/data/definitions/326.html]
+      enabled: true
+    - id: WEAK_TLS_ECC_BITS_LITERAL
+      title: Weak TLS ECC key size marker
+      category: TLS misconfiguration
+      severity: High
+      confidence: 0.78
+      cvss: 7.4
+      languages: [generic]
+      regex: "(?:ecc|ec|ecdsa)[_ -]?(?:bits|key_size)\\s*[:=]\\s*(160|192)"
+      cwe: [CWE-326]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use modern curves such as P-256/P-384 or X25519.
+      references: [https://cwe.mitre.org/data/definitions/326.html]
+      enabled: true
+    - id: MISSING_HSTS_LITERAL
+      title: Missing HSTS marker detected
+      category: TLS misconfiguration
+      severity: Low
+      confidence: 0.75
+      cvss: 3.7
+      languages: [generic]
+      regex: "\\bmissing[_ -]?hsts\\b|\\bhsts\\s*[:=]\\s*(?:false|off|disabled)"
+      cwe: [CWE-319]
+      owasp: A05 Security Misconfiguration
+      recommendation: Add Strict-Transport-Security with a one-year max-age after HTTPS validation.
+      references: [https://developer.mozilla.org/docs/Web/HTTP/Headers/Strict-Transport-Security]
+      enabled: true
+    - id: WEAK_HSTS_LITERAL
+      title: Weak HSTS max-age marker detected
+      category: TLS misconfiguration
+      severity: Medium
+      confidence: 0.78
+      cvss: 5.3
+      languages: [generic]
+      regex: "Strict-Transport-Security\\s*[:=]\\s*[\"']?max-age=(?:[0-9]{1,7})(?:[;\"'\\s]|$)"
+      cwe: [CWE-319]
+      owasp: A05 Security Misconfiguration
+      recommendation: Use HSTS max-age of at least 31536000 seconds where appropriate.
+      references: [https://developer.mozilla.org/docs/Web/HTTP/Headers/Strict-Transport-Security]
+      enabled: true
+
+  missing_security_headers:
+    - id: MISSING_CSP_LITERAL
+      title: Missing Content-Security-Policy marker
+      category: Missing secure headers
+      severity: Medium
+      confidence: 0.78
+      cvss: 5.3
+      languages: [json, yaml, generic]
+      regex: "\\bmissing[_ -]?csp\\b|\\bcontent-security-policy\\s*[:=]\\s*(?:false|null|none|missing)"
+      cwe: [CWE-693]
+      owasp: A05 Security Misconfiguration
+      recommendation: Define a restrictive Content-Security-Policy.
+      references: [https://developer.mozilla.org/docs/Web/HTTP/CSP]
+      enabled: true
+    - id: MISSING_HSTS_HEADER_LITERAL
+      title: Missing Strict-Transport-Security marker
+      category: Missing secure headers
+      severity: Medium
+      confidence: 0.78
+      cvss: 5.3
+      languages: [json, yaml, generic]
+      regex: "\\bstrict-transport-security\\s*[:=]\\s*(?:false|null|none|missing)"
+      cwe: [CWE-693]
+      owasp: A05 Security Misconfiguration
+      recommendation: Send Strict-Transport-Security on HTTPS responses.
+      references: [https://developer.mozilla.org/docs/Web/HTTP/Headers/Strict-Transport-Security]
+      enabled: true
+    - id: MISSING_X_FRAME_OPTIONS_LITERAL
+      title: Missing X-Frame-Options marker
+      category: Missing secure headers
+      severity: Low
+      confidence: 0.78
+      cvss: 3.7
+      languages: [json, yaml, generic]
+      regex: "\\bx-frame-options\\s*[:=]\\s*(?:false|null|none|missing)"
+      cwe: [CWE-693]
+      owasp: A05 Security Misconfiguration
+      recommendation: Use DENY/SAMEORIGIN or CSP frame-ancestors.
+      references: [https://developer.mozilla.org/docs/Web/HTTP/Headers/X-Frame-Options]
+      enabled: true
+    - id: MISSING_X_CONTENT_TYPE_LITERAL
+      title: Missing X-Content-Type-Options marker
+      category: Missing secure headers
+      severity: Low
+      confidence: 0.78
+      cvss: 3.7
+      languages: [json, yaml, generic]
+      regex: "\\bx-content-type-options\\s*[:=]\\s*(?:false|null|none|missing)"
+      cwe: [CWE-693]
+      owasp: A05 Security Misconfiguration
+      recommendation: "Set X-Content-Type-Options: nosniff."
+      references: [https://developer.mozilla.org/docs/Web/HTTP/Headers/X-Content-Type-Options]
+      enabled: true
+    - id: MISSING_REFERRER_POLICY_LITERAL
+      title: Missing Referrer-Policy marker
+      category: Missing secure headers
+      severity: Low
+      confidence: 0.78
+      cvss: 3.7
+      languages: [json, yaml, generic]
+      regex: "\\breferrer-policy\\s*[:=]\\s*(?:false|null|none|missing)"
+      cwe: [CWE-693]
+      owasp: A05 Security Misconfiguration
+      recommendation: Set a privacy-preserving Referrer-Policy.
+      references: [https://developer.mozilla.org/docs/Web/HTTP/Headers/Referrer-Policy]
+      enabled: true
+    - id: MISSING_PERMISSIONS_POLICY_LITERAL
+      title: Missing Permissions-Policy marker
+      category: Missing secure headers
+      severity: Low
+      confidence: 0.78
+      cvss: 3.7
+      languages: [json, yaml, generic]
+      regex: "\\bpermissions-policy\\s*[:=]\\s*(?:false|null|none|missing)"
+      cwe: [CWE-693]
+      owasp: A05 Security Misconfiguration
+      recommendation: Disable browser features that the application does not need.
+      references: [https://developer.mozilla.org/docs/Web/HTTP/Headers/Permissions-Policy]
+      enabled: true
+    - id: MISSING_COOP_LITERAL
+      title: Missing Cross-Origin-Opener-Policy marker
+      category: Missing secure headers
+      severity: Low
+      confidence: 0.78
+      cvss: 3.7
+      languages: [json, yaml, generic]
+      regex: "\\bcross-origin-opener-policy\\s*[:=]\\s*(?:false|null|none|missing)"
+      cwe: [CWE-693]
+      owasp: A05 Security Misconfiguration
+      recommendation: Set Cross-Origin-Opener-Policy where isolation is required.
+      references: [https://developer.mozilla.org/docs/Web/HTTP/Headers/Cross-Origin-Opener-Policy]
+      enabled: true
+    - id: MISSING_COEP_LITERAL
+      title: Missing Cross-Origin-Embedder-Policy marker
+      category: Missing secure headers
+      severity: Low
+      confidence: 0.78
+      cvss: 3.7
+      languages: [json, yaml, generic]
+      regex: "\\bcross-origin-embedder-policy\\s*[:=]\\s*(?:false|null|none|missing)"
+      cwe: [CWE-693]
+      owasp: A05 Security Misconfiguration
+      recommendation: Set Cross-Origin-Embedder-Policy where cross-origin isolation is required.
+      references: [https://developer.mozilla.org/docs/Web/HTTP/Headers/Cross-Origin-Embedder-Policy]
+      enabled: true
+    - id: MISSING_CORP_LITERAL
+      title: Missing Cross-Origin-Resource-Policy marker
+      category: Missing secure headers
+      severity: Low
+      confidence: 0.78
+      cvss: 3.7
+      languages: [json, yaml, generic]
+      regex: "\\bcross-origin-resource-policy\\s*[:=]\\s*(?:false|null|none|missing)"
+      cwe: [CWE-693]
+      owasp: A05 Security Misconfiguration
+      recommendation: Set Cross-Origin-Resource-Policy for sensitive resources.
+      references: [https://developer.mozilla.org/docs/Web/HTTP/Headers/Cross-Origin-Resource-Policy]
+      enabled: true
+    - id: MISSING_CACHE_CONTROL_LITERAL
+      title: Missing Cache-Control marker
+      category: Missing secure headers
+      severity: Medium
+      confidence: 0.78
+      cvss: 5.3
+      languages: [json, yaml, generic]
+      regex: "\\bcache-control\\s*[:=]\\s*(?:false|null|none|missing)"
+      cwe: [CWE-693]
+      owasp: A05 Security Misconfiguration
+      recommendation: "Set Cache-Control: no-store on authenticated or sensitive pages."
+      references: [https://developer.mozilla.org/docs/Web/HTTP/Headers/Cache-Control]
+      enabled: true
+
+  weak_cryptographic_modes:
+    - id: WEAK_CIPHER_AES-ECB
+      title: AES ECB mode detected
+      category: Weak cryptographic modes
+      severity: High
+      confidence: 0.95
+      cvss: 7.5
+      languages: [python, java, javascript, generic]
+      regex: "AES(?:/|\\.MODE_)?ECB|MODE_ECB|[\"']aes-\\d+-ecb[\"']|Cipher\\.getInstance\\(\\s*[\"']AES/ECB"
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use authenticated encryption such as AES-GCM or ChaCha20-Poly1305.
+      references: [https://cwe.mitre.org/data/definitions/327.html]
+      enabled: true
+      crypto_feature: AES-ECB
+    - id: WEAK_CIPHER_DES
+      title: DES cipher detected
+      category: Weak cryptographic modes
+      severity: High
+      confidence: 0.95
+      cvss: 7.5
+      languages: [python, java, javascript, generic]
+      regex: "\\bDES\\b|DES/|Cipher\\.getInstance\\(\\s*[\"']DES|[\"']des-[^\"']*[\"']|mcrypt_module_open\\(\\s*[\"']des[\"']"
+      cwe: [CWE-326]
+      owasp: A02 Cryptographic Failures
+      recommendation: Replace DES with AES-GCM or ChaCha20-Poly1305.
+      references: [https://cwe.mitre.org/data/definitions/326.html]
+      enabled: true
+      crypto_feature: DES
+    - id: WEAK_CIPHER_3DES
+      title: Triple DES cipher detected
+      category: Weak cryptographic modes
+      severity: High
+      confidence: 0.94
+      cvss: 7.5
+      languages: [python, java, javascript, generic]
+      regex: "\\b3DES\\b|DESede|TripleDES|DES-EDE|DES3"
+      cwe: [CWE-326]
+      owasp: A02 Cryptographic Failures
+      recommendation: Replace 3DES with AES-GCM or ChaCha20-Poly1305.
+      references: [https://csrc.nist.gov/news/2023/nist-to-withdraw-sp-800-67-rev-2]
+      enabled: true
+      crypto_feature: 3DES
+    - id: WEAK_CIPHER_RC2
+      title: RC2 cipher detected
+      category: Weak cryptographic modes
+      severity: High
+      confidence: 0.95
+      cvss: 7.5
+      languages: [python, java, javascript, generic]
+      regex: "\\bRC2\\b|RC2/|Cipher\\.getInstance\\(\\s*[\"']RC2|[\"']rc2[^\"']*[\"']"
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Replace RC2 with AES-GCM or ChaCha20-Poly1305.
+      references: [https://cwe.mitre.org/data/definitions/327.html]
+      enabled: true
+      crypto_feature: RC2
+    - id: WEAK_CIPHER_RC4
+      title: RC4 cipher detected
+      category: Weak cryptographic modes
+      severity: High
+      confidence: 0.95
+      cvss: 7.5
+      languages: [python, java, javascript, generic]
+      regex: "\\bRC4\\b|ARC4|Cipher\\.getInstance\\(\\s*[\"']RC4"
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Disable RC4 and use modern AEAD ciphers.
+      references: [https://www.rfc-editor.org/rfc/rfc7465]
+      enabled: true
+      crypto_feature: RC4
+    - id: WEAK_CIPHER_BLOWFISH
+      title: Blowfish cipher detected
+      category: Weak cryptographic modes
+      severity: Medium
+      confidence: 0.86
+      cvss: 5.3
+      languages: [python, java, javascript, generic]
+      regex: "\\bBlowfish\\b|BF-CBC|Cipher\\.getInstance\\(\\s*[\"']Blowfish"
+      cwe: [CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Prefer AES-GCM or ChaCha20-Poly1305 for new encryption.
+      references: [https://cwe.mitre.org/data/definitions/327.html]
+      enabled: true
+      crypto_feature: Blowfish
+    - id: CBC_WITHOUT_AUTH
+      title: CBC mode without visible authentication
+      category: Weak cryptographic modes
+      severity: Medium
+      confidence: 0.76
+      cvss: 5.3
+      languages: [python, java, javascript, generic]
+      regex: "AES(?:/|\\.MODE_)?CBC|MODE_CBC|[\"']aes-\\d+-cbc[\"']|Cipher\\.getInstance\\(\\s*[\"']AES/CBC"
+      cwe: [CWE-353, CWE-327]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use AES-GCM or add HMAC over IV and ciphertext with correct key separation.
+      references: [https://cwe.mitre.org/data/definitions/353.html]
+      enabled: true
+      crypto_feature: CBC
+    - id: SMALL_RSA_KEY
+      title: Weak RSA key size detected
+      category: Weak cryptographic modes
+      severity: High
+      confidence: 0.96
+      cvss: 7.5
+      languages: [python, java, generic]
+      regex: "RSA.*?(?:keysize|key_size|bits)\\s*[:=]\\s*(\\d+)|RSA\\.generate\\(\\s*(?:bits\\s*=\\s*)?(\\d+)|generate_private_key.*?key_size\\s*=\\s*(\\d+)"
+      cwe: [CWE-326]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use RSA keys of at least 2048 bits or modern elliptic curve keys.
+      references: [https://cwe.mitre.org/data/definitions/326.html]
+      enabled: true
+      crypto_feature: RSA
+      numeric_group_below: 2048
+    - id: WEAK_DH_PARAMETERS
+      title: Weak Diffie-Hellman parameters
+      category: Weak cryptographic modes
+      severity: High
+      confidence: 0.90
+      cvss: 7.5
+      languages: [nginx, apache, java, generic]
+      regex: "(?:dhparam|DHParameterSpec|dh[_-]?bits)\\D{0,20}(512|768|1024)"
+      cwe: [CWE-326]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use at least 2048-bit finite-field DH or prefer ECDHE with modern curves.
+      references: [https://weakdh.org/]
+      enabled: true
+      numeric_group_below: 2048
+    - id: WEAK_ELLIPTIC_CURVE
+      title: Weak elliptic curve detected
+      category: Weak cryptographic modes
+      severity: High
+      confidence: 0.90
+      cvss: 7.5
+      languages: [java, openssl, generic]
+      regex: "\\b(?:secp112r1|secp128r1|secp160r1|sect163k1|prime192v1|secp192r1)\\b"
+      cwe: [CWE-326]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use P-256/P-384, X25519, or another approved modern curve.
+      references: [https://cwe.mitre.org/data/definitions/326.html]
+      enabled: true
+    - id: SMALL_AES_KEY
+      title: Weak AES key size detected
+      category: Weak cryptographic modes
+      severity: High
+      confidence: 0.96
+      cvss: 7.5
+      languages: [python, java, javascript, generic]
+      regex: "AES.*?(?:keysize|key_size|bits|length)\\s*[:=]\\s*(\\d+)"
+      cwe: [CWE-326]
+      owasp: A02 Cryptographic Failures
+      recommendation: Use AES-128 at minimum, with AES-256 preferred for highly sensitive data.
+      references: [https://cwe.mitre.org/data/definitions/326.html]
+      enabled: true
+      crypto_feature: AES
+      numeric_group_below: 128

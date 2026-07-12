@@ -2,8 +2,14 @@ from __future__ import annotations
 
 """Provider-pluggable LLM layer that only explains data already produced by Vulnexus."""
 
+import json
+import threading
+import time
 from dataclasses import dataclass
+from urllib.parse import urlparse
 from typing import Any, Protocol
+
+import httpx
 
 from app.config import settings
 from app.services.intelligence.rag_store import knowledge_store
@@ -34,12 +40,126 @@ class RuleBasedProvider:
         )
 
 
+class LLMRateLimitExceeded(RuntimeError):
+    pass
+
+
+class InMemoryRateLimiter:
+    def __init__(self, limit: str) -> None:
+        self.max_requests, self.window_seconds = self._parse_limit(limit)
+        self._timestamps: list[float] = []
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+        with self._lock:
+            self._timestamps = [stamp for stamp in self._timestamps if stamp > cutoff]
+            if len(self._timestamps) >= self.max_requests:
+                raise LLMRateLimitExceeded("LLM API request rate limit exceeded")
+            self._timestamps.append(now)
+
+    def _parse_limit(self, value: str) -> tuple[int, float]:
+        raw = (value or "").strip().lower()
+        if not raw:
+            return 30, 60.0
+        if "/" not in raw:
+            try:
+                return max(int(raw), 1), 60.0
+            except ValueError:
+                return 30, 60.0
+        amount, period = raw.split("/", 1)
+        try:
+            max_requests = max(int(amount.strip()), 1)
+        except ValueError:
+            max_requests = 30
+        period = period.strip()
+        if period in {"second", "seconds", "sec", "s"}:
+            return max_requests, 1.0
+        if period in {"hour", "hours", "h"}:
+            return max_requests, 3600.0
+        return max_requests, 60.0
+
+
 class OpenAICompatibleProvider:
-    def __init__(self, *, name: str = "llm-provider") -> None:
+    def __init__(
+        self,
+        *,
+        name: str = "llm-provider",
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+        rate_limiter: InMemoryRateLimiter | None = None,
+    ) -> None:
         self.name = name
+        self.api_key = api_key or settings.OPENAI_API_KEY
+        self.base_url = base_url or settings.OPENAI_BASE_URL
+        self.model = model or settings.OPENAI_MODEL
+        self.rate_limiter = rate_limiter or InMemoryRateLimiter(settings.LLM_RATE_LIMIT)
+        self.fallback = RuleBasedProvider()
 
     def generate(self, *, prompt: str, context: dict[str, Any]) -> str:
-        return RuleBasedProvider().generate(prompt=prompt, context=context)
+        if not self.api_key:
+            return self.fallback.generate(prompt=prompt, context=context)
+
+        try:
+            self.rate_limiter.acquire()
+            response = self._request(prompt=prompt, context=context)
+            generated = self._extract_text(response)
+            return generated or self.fallback.generate(prompt=prompt, context=context)
+        except (httpx.HTTPError, LLMRateLimitExceeded, ValueError, KeyError, TypeError):
+            return self.fallback.generate(prompt=prompt, context=context)
+
+    def _request(self, *, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        url = self._chat_completions_url(self.base_url)
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are VulNexus' security explanation engine. Use only the supplied JSON context. "
+                        "Do not invent CVEs, exploit status, vendors, dates, or evidence."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"{prompt}\n\nContext JSON:\n{self._safe_json(context)}",
+                },
+            ],
+            "temperature": settings.OPENAI_TEMPERATURE,
+            "max_tokens": settings.OPENAI_MAX_TOKENS,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        with httpx.Client(timeout=settings.OPENAI_TIMEOUT_SECONDS) as client:
+            response = client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            return response.json()
+
+    def _chat_completions_url(self, base_url: str) -> str:
+        clean = (base_url or "").strip().rstrip("/")
+        if not clean:
+            clean = "https://api.openai.com/v1"
+        path = urlparse(clean).path.rstrip("/")
+        if path.endswith("/chat/completions"):
+            return clean
+        return f"{clean}/chat/completions"
+
+    def _safe_json(self, context: dict[str, Any]) -> str:
+        return json.dumps(context, sort_keys=True, default=str)[:12000]
+
+    def _extract_text(self, payload: dict[str, Any]) -> str:
+        choices = payload.get("choices") or []
+        if not choices:
+            return ""
+        message = choices[0].get("message") or {}
+        content = message.get("content") or choices[0].get("text") or ""
+        if isinstance(content, list):
+            return " ".join(str(part.get("text") or part.get("content") or "") if isinstance(part, dict) else str(part) for part in content).strip()
+        return str(content).strip()
 
 
 class LLMIntelligenceEngine:

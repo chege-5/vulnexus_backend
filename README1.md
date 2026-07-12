@@ -1,13 +1,14 @@
-# VulNexus — AI-Based Cryptography Vulnerability Scanner (Backend)
+# VulNexus — Cryptography and Security Weakness Scanner (Backend)
 
-Hybrid AI-powered backend system that scans source code and live websites for cryptographic vulnerabilities, scores them using machine learning, maps them to real CVEs, and generates professional audit reports.
+Backend system that scans source code and live websites for representative cryptographic, transport, secrets, and secure-header weaknesses, then generates audit reports for review.
+
+VulNexus currently uses regex-based static analysis, active TLS probing, and HTTP header inspection to detect representative examples of the seven documented security weakness categories. Detection breadth is being expanded through additional rules, semantic analysis, and language-specific parsers.
 
 ## Architecture
 
 ```
-User Input → Static Code Scanner → Web TLS Scanner → Rule Engine
-    → Feature Engineering → AI Risk Scoring → CVE Mapping
-    → Audit Report Generator → API Response
+User Input -> Static Code Scanner -> Web TLS Scanner -> Header Scanner
+    -> Rule Engine -> Report Generator -> API Response
 ```
 
 ## Tech Stack
@@ -16,10 +17,10 @@ User Input → Static Code Scanner → Web TLS Scanner → Rule Engine
 |-----------|-----------|
 | API Framework | FastAPI (async) |
 | Database | PostgreSQL + SQLAlchemy (async) |
-| Schema setup | SQLAlchemy `create_all` on startup |
-| ML | scikit-learn (Random Forest + Isolation Forest) |
-| Reports | WeasyPrint (PDF) / Jinja2 (HTML) |
-| Performance | Rust via PyO3 (optional) |
+| Schema setup | Alembic migrations with startup revision checks |
+| ML | Deterministic scoring with optional experimental model utilities |
+| Reports | Playwright/Chromium PDF rendering + Jinja2 HTML |
+| Performance | Python scanner implementation |
 | Caching | In-memory / Redis |
 | Deployment | Docker Compose |
 
@@ -44,13 +45,7 @@ docker-compose up --build -d
 docker-compose exec backend python scripts/init_db.py
 ```
 
-### 4. Train ML model
-
-```bash
-docker-compose exec backend python scripts/train_model.py
-```
-
-### 5. Access API
+### 4. Access API
 
 - API: http://localhost:8000
 - Docs: http://localhost:8000/docs
@@ -113,12 +108,6 @@ backend/
 │       ├── tls_utils.py        # TLS connection analysis
 │       ├── logger.py           # Structured logging
 │       └── cache.py            # Simple caching layer
-├── rust_modules/
-│   ├── Cargo.toml
-│   ├── build.rs
-│   └── src/
-│       ├── lib.rs              # PyO3 Python bindings
-│       └── crypto_analysis.rs  # Entropy, ZIP parsing, pattern detection
 ├── tests/
 │   ├── test_file_scanner.py
 │   ├── test_web_scanner.py
@@ -138,11 +127,12 @@ backend/
 ### Static Code Scanner
 - Hardcoded keys and secrets
 - Weak hash algorithms (MD5, SHA-1)
-- Weak ciphers (DES, RC2, AES-ECB)
+- Weak ciphers and modes (AES-ECB, DES, 3DES, RC2, RC4, Blowfish, unauthenticated CBC)
 - Insecure random number generators
 - Small RSA keys (< 2048 bits)
 - Small AES keys (< 128 bits)
 - Private key detection
+- Poor key management indicators such as static IVs, static salts, weak JWT secrets, and config-stored secrets
 
 ### Web TLS Scanner
 - TLS version detection
@@ -166,13 +156,10 @@ backend/
 | VirusTotal | Malware analysis | No (feature flag) |
 | OpenAI | AI remediation text | No (feature flag) |
 
-## ML Model
+## Scoring
 
-- **Primary**: Random Forest Classifier (4 severity classes)
-- **Optional**: Isolation Forest (anomaly detection)
-- **Features**: 16 cryptographic security indicators
-- **Output**: Risk score (0-100) + severity classification
-- **Persistence**: joblib serialization
+- Deterministic rules assign severity, confidence, remediation, and CWE/OWASP mapping where available.
+- Experimental model utilities may be used during research, but the demo path does not depend on machine-learning classification.
 
 ## Testing
 
@@ -190,6 +177,41 @@ pytest tests/ -v --cov=app --cov-report=html
 - `cve_entries` — Cached CVE data
 - `ml_features` — Feature vectors for model retraining
 
+### Database migrations
+
+`DATABASE_URL` is the single source of truth for FastAPI and Alembic. It must
+point to PostgreSQL using `postgresql+asyncpg://user:pass@host:5432/dbname`.
+`postgresql://` URLs are normalized automatically. `ASYNC_DATABASE_URL`, when
+retained for backward compatibility, must match `DATABASE_URL`.
+
+Install dependencies and bring any new or existing database to the current
+revision before starting the API:
+
+```powershell
+python -m pip install -r requirements.txt
+python -m alembic upgrade head
+python -m alembic current
+python -m uvicorn app.main:app --reload
+```
+
+Useful inspection and migration commands:
+
+```powershell
+python -m alembic current
+python -m alembic heads
+python -m alembic history
+python -m alembic check
+python -m alembic revision --autogenerate -m "description"
+python -m alembic upgrade head
+python -m alembic downgrade -1
+```
+
+Review every autogenerated migration before applying it. Production migrations
+should be run as a deployment step before new application instances start; the
+application deliberately refuses to start when its database revision is behind
+the Alembic head. Never use `Base.metadata.create_all()` as a migration system:
+it can create missing tables but cannot add or alter columns in existing tables.
+
 ## Environment Variables
 
 See `.env.example` for all configuration options. Key variables:
@@ -199,14 +221,6 @@ See `.env.example` for all configuration options. Key variables:
 - `NVD_API_KEY` — NVD API key (optional, increases rate limits)
 - `LLM_ENABLED` — Enable AI-generated remediation text
 - `ML_RETRAIN_ON_STARTUP` — Auto-train model on startup
-
-## Building Rust Module (Optional)
-
-```bash
-cd rust_modules
-pip install maturin
-maturin develop --release
-```
 
 ## License
 

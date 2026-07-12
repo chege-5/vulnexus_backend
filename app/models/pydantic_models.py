@@ -202,9 +202,21 @@ class RuleVulnerability(BaseModel):
     rule_id: str
     description: str
     severity: str
+    title: Optional[str] = None
+    category: Optional[str] = None
     file_path: Optional[str] = None
     line_number: Optional[int] = None
+    column_number: Optional[int] = None
     crypto_feature: Optional[str] = None
+    confidence: float = 0.8
+    confidence_label: str = "probable"
+    evidence: dict = Field(default_factory=dict)
+    explanation: Optional[str] = None
+    remediation: Optional[str] = None
+    recommendation: Optional[str] = None
+    cwe_ids: list[str] = Field(default_factory=list)
+    owasp_category: Optional[str] = None
+    references: list[str] = Field(default_factory=list)
 
 
 class MLPrediction(BaseModel):
