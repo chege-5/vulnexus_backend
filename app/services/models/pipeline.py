@@ -38,11 +38,20 @@ class RawFinding(BaseModel):
     title: str
     description: str
     severity: str = "Medium"
+    confidence_label: Literal["confirmed", "probable", "informational", "inconclusive"] | None = None
+    status: Literal["open", "resolved", "accepted", "informational"] = "open"
     evidence: dict[str, Any] = Field(default_factory=dict)
+    affected_asset: str | None = None
     location: str | None = None
     confidence: float = 0.5
     source: str = "scanner"
+    source_scanner: str | None = None
     tags: list[str] = Field(default_factory=list)
+    remediation: str | None = None
+    references: list[str] = Field(default_factory=list)
+    compliance_mapping: dict[str, Any] = Field(default_factory=dict)
+    classification: str = "unknown"
+    correlation_group: str | None = None
     raw_data: dict[str, Any] = Field(default_factory=dict)
     target: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
@@ -52,12 +61,15 @@ class RawFinding(BaseModel):
 class CorrelatedFinding(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     group_key: str
+    correlation_id: str | None = None
+    contributing_rule_ids: list[str] = Field(default_factory=list)
     title: str
     description: str
     severity: str
     threat_category: str = "general"
     attack_surface_category: str = "unknown"
     risk_category: str = "medium"
+    classification: str = "unknown"
     cwe_ids: list[str] = Field(default_factory=list)
     related_cves: list[str] = Field(default_factory=list)
     related_assets: list[str] = Field(default_factory=list)
@@ -81,6 +93,10 @@ class CorrelatedFinding(BaseModel):
     raw_findings: list[RawFinding] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
+
+    @property
+    def finding(self) -> "CorrelatedFinding":
+        return self
 
 
 class IntelligenceResult(BaseModel):

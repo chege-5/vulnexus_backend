@@ -1,0 +1,6 @@
+encryption:
+  key: "0123456789abcdef0123456789abcdef"
+  iv: "0000000000000000"
+  salt: "static-demo-salt"
+auth:
+  jwt_secret: "short"

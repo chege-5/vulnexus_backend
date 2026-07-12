@@ -32,23 +32,56 @@ class TargetScanner(ABC):
         description: str,
         severity: str = "Medium",
         evidence: dict[str, Any] | None = None,
+        affected_asset: str | None = None,
         location: str | None = None,
         confidence: float = 0.5,
+        confidence_label: str | None = None,
+        status: str = "open",
         source: str | None = None,
         tags: list[str] | None = None,
+        remediation: str | None = None,
+        references: list[str] | None = None,
+        compliance_mapping: dict[str, Any] | None = None,
+        correlation_group: str | None = None,
         raw_data: dict[str, Any] | None = None,
         target: str | None = None,
     ) -> RawFinding:
-        return RawFinding(
+        raw = raw_data or {}
+        classification = str(raw.get("classification") or "unknown")
+        mapping = compliance_mapping or {}
+        if not mapping and raw.get("rule_id"):
+            try:
+                from app.services.audit_engine import RULE_PROFILE_MAP
+                mapping = RULE_PROFILE_MAP.get(str(raw.get("rule_id")), {})
+            except Exception:
+                mapping = {}
+        finding = RawFinding(
             type=finding_type,
             title=title,
             description=description,
             severity=severity,
             evidence=evidence or {},
+            affected_asset=affected_asset or target or location,
             location=location,
             confidence=confidence,
+            confidence_label=confidence_label,
+            status=status,
             source=source or self.name,
+            source_scanner=source or self.name,
             tags=tags or [],
-            raw_data=raw_data or {},
+            remediation=remediation,
+            references=references or [],
+            compliance_mapping=mapping,
+            classification=classification,
+            correlation_group=correlation_group,
+            raw_data=raw,
             target=target,
         )
+        if classification == "unknown":
+            try:
+                from app.services.finding_classifier import classify_raw_finding
+
+                finding.classification = classify_raw_finding(finding).value
+            except Exception:
+                pass
+        return finding

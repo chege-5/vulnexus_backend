@@ -7,6 +7,8 @@ from typing import Any
 
 from app.services.integrations.cache import cache
 from app.services.integrations.manager import integration_manager
+from app.services.integrations.base import to_intelligence_result
+from app.services.finding_classifier import build_software_lookup_query, is_software_vulnerability_classification, safe_intelligence_context
 from app.services.intelligence.graph import GraphNode, threat_graph
 from app.services.intelligence.llm_engine import llm_engine
 from app.services.intelligence.mapping import build_decision
@@ -26,9 +28,23 @@ class SecurityIntelligenceKnowledgeEngine:
         retrieved = knowledge_store.retrieve(query, topics=[finding.threat_category, finding.attack_surface_category], limit=5)
 
         provider_results = []
+        provider_statuses = []
         provider_names = self._providers_for(finding)
         if provider_names:
-            provider_results = await integration_manager.enrich_intelligence(finding.title or query, providers=provider_names, context={**finding.evidence, **(asset_context or {})}, limit=5)
+            lookup_query = self._lookup_query_for(finding, decision)
+            safe_context = safe_intelligence_context({**finding.evidence, **(asset_context or {}), "classification": decision.classification})
+            provider_responses = await integration_manager.lookup(lookup_query, providers=provider_names, context=safe_context, limit=5)
+            provider_statuses = [
+                {
+                    "provider": response.provider,
+                    "success": response.success,
+                    "status_code": response.status_code,
+                    "error": self._provider_error_label(response.provider, response.status_code, response.error),
+                }
+                for response in provider_responses
+                if not response.success
+            ]
+            provider_results = [to_intelligence_result(response, query=lookup_query) for response in provider_responses if response.success or response.cached]
 
         intelligence = list(provider_results)
         cve_id = next((item.cve_id for item in intelligence if item.cve_id), None)
@@ -47,6 +63,7 @@ class SecurityIntelligenceKnowledgeEngine:
                 "scanner_source": finding.primary_source,
                 "discovery_time": finding.created_at.isoformat(),
                 "affected_assets": finding.related_assets,
+                "classification": finding.classification,
             },
             "technical": {
                 "root_cause": decision.technical_explanation,
@@ -66,6 +83,7 @@ class SecurityIntelligenceKnowledgeEngine:
                 "cisa_kev": kev,
                 "epss": epss_score,
                 "vendor_advisories": [item.get("url") for item in retrieved if item.get("source") == "Vendor guidance"],
+                "provider_statuses": provider_statuses,
                 "exploitdb_references": finding.evidence.get("exploitdb") or [],
                 "github_pocs": finding.evidence.get("github_pocs") or [],
                 "known_threat_actors": finding.evidence.get("threat_actors") or [],
@@ -161,13 +179,28 @@ class SecurityIntelligenceKnowledgeEngine:
 
     def _providers_for(self, finding: CorrelatedFinding) -> list[str]:
         providers: list[str] = []
-        if finding.requires_cve_lookup:
+        if finding.requires_cve_lookup and is_software_vulnerability_classification(finding.classification):
             providers.extend(["nvd", "circl", "epss", "cisa", "mitre"])
         if finding.threat_category in {"exposure", "reputation"}:
             providers.extend(["shodan", "censys", "abuseipdb", "greynoise", "ipinfo"])
         if finding.threat_category in {"technology", "browser"}:
             providers.extend(["builtwith", "wappalyzer", "urlscan"])
         return providers
+
+    def _lookup_query_for(self, finding: CorrelatedFinding, decision) -> str:
+        if finding.requires_cve_lookup and is_software_vulnerability_classification(finding.classification):
+            return build_software_lookup_query(finding.title or decision.finding_key, finding.evidence)
+        return str(finding.related_assets[0] if finding.related_assets else finding.evidence.get("ip_address") or finding.evidence.get("host") or finding.title)
+
+    def _provider_error_label(self, provider: str, status_code: int | None, error: str | None) -> str:
+        text = (error or "").lower()
+        if status_code in {401, 403} or "auth" in text or "api key" in text or "unauthorized" in text or "forbidden" in text:
+            return f"{provider} unavailable (authentication)"
+        if status_code == 429 or "rate limit" in text:
+            return f"{provider} unavailable (rate limit)"
+        if error:
+            return f"{provider} unavailable ({error})"
+        return f"{provider} unavailable"
 
     def _collect_references(self, intelligence: list[IntelligenceResult], decision_references: list[str], retrieved: list[dict[str, Any]]) -> list[str]:
         references = list(dict.fromkeys([*decision_references, *[url for item in retrieved for url in [item.get("url")] if url]]))

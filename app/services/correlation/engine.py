@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import hashlib
+import re
 from typing import Any
 
-from app.services.audit_engine import RULE_PROFILE_MAP
+from app.services.finding_classifier import FindingClassification, classify_raw_finding, is_software_vulnerability_classification
 from app.services.intelligence.mapping import build_decision
 from app.services.models.pipeline import CorrelatedFinding, RawFinding
 
@@ -30,12 +32,15 @@ class CorrelationEngine:
 
         return CorrelatedFinding(
             group_key=group_key,
+            correlation_id=self._correlation_id(profile["threat_category"], profile["attack_surface_category"], group_key),
+            contributing_rule_ids=self._collect_rule_ids(findings),
             title=self._incident_title(primary, profile["threat_category"]),
             description=self._incident_description(primary, findings),
             severity=self._severity_from_items(findings),
             threat_category=profile["threat_category"],
             attack_surface_category=profile["attack_surface_category"],
             risk_category=profile["risk_category"],
+            classification=profile["classification"],
             cwe_ids=list(profile["cwe_ids"]),
             related_cves=cves,
             related_assets=assets,
@@ -60,13 +65,17 @@ class CorrelationEngine:
         )
 
     def _profile_for(self, finding: RawFinding) -> dict[str, Any]:
-        decision = build_decision(finding.title, rule_id=finding.raw_data.get("rule_id"), severity=finding.severity, description=finding.description, metadata=finding.raw_data)
+        classification = finding.classification if finding.classification != "unknown" else classify_raw_finding(finding).value
+        if finding.classification != classification:
+            finding.classification = classification
+        decision = build_decision(finding.title, rule_id=finding.raw_data.get("rule_id"), severity=finding.severity, description=finding.description, metadata={**finding.raw_data, **finding.evidence, "classification": classification, "tags": finding.tags, "source": finding.source, "type": finding.type})
         threat_category = self._threat_category(finding, decision.finding_key)
         attack_surface = self._attack_surface_category(finding, decision.finding_key)
         return {
             "threat_category": threat_category,
             "attack_surface_category": attack_surface,
             "risk_category": self._risk_category(threat_category, attack_surface, finding.severity),
+            "classification": classification,
             "cwe_ids": decision.cwe_ids,
             "mitre_attack": self._mitre_attack(threat_category, decision.finding_key),
             "capec": self._capec(threat_category, decision.finding_key),
@@ -76,15 +85,56 @@ class CorrelationEngine:
             "exploitation_difficulty": self._difficulty(finding.severity, threat_category, "exploit"),
             "detection_difficulty": self._difficulty(finding.severity, threat_category, "detect"),
             "attack_chain_contribution": self._attack_chain_contribution(threat_category, finding.severity),
-            "requires_cve_lookup": decision.requires_cve_lookup or self._looks_like_software_version(finding),
+            "requires_cve_lookup": is_software_vulnerability_classification(classification) and (decision.requires_cve_lookup or self._looks_like_software_version(finding)),
         }
 
     def _group_key(self, finding: RawFinding) -> str:
         profile = self._profile_for(finding)
+        if finding.correlation_group:
+            return finding.correlation_group
         anchor = finding.location or finding.target or finding.raw_data.get("host") or finding.raw_data.get("domain") or "global"
         return f"{anchor}:{profile['threat_category']}:{profile['attack_surface_category']}"
 
+    def _correlation_id(self, threat_category: str, attack_surface_category: str, group_key: str) -> str:
+        threat = re.sub(r"[^A-Z0-9]+", "-", threat_category.upper()).strip("-") or "GENERAL"
+        surface = re.sub(r"[^A-Z0-9]+", "-", attack_surface_category.upper()).strip("-") or "APP"
+        digest = hashlib.sha1(group_key.encode("utf-8")).hexdigest()[:8].upper()
+        return f"VN-CORR-{threat}-{surface}-{digest}"[:255]
+
+    def _collect_rule_ids(self, findings: list[RawFinding]) -> list[str]:
+        rule_ids: list[str] = []
+        for finding in findings:
+            for candidate in (
+                finding.raw_data.get("rule_id"),
+                finding.evidence.get("rule_id"),
+                finding.raw_data.get("source_rule_id"),
+                finding.evidence.get("source_rule_id"),
+            ):
+                if candidate:
+                    value = str(candidate).strip()
+                    if value and value not in rule_ids:
+                        rule_ids.append(value)
+        return rule_ids
+
     def _threat_category(self, finding: RawFinding, finding_key: str) -> str:
+        classification = finding.classification or classify_raw_finding(finding).value
+        if classification == FindingClassification.SOFTWARE_VULNERABILITY.value:
+            return "dependency"
+        if classification == FindingClassification.SECRET_EXPOSURE.value:
+            return "secret"
+        if classification in {
+            FindingClassification.CRYPTOGRAPHIC_CONFIG_WEAKNESS.value,
+            FindingClassification.CERTIFICATE_TRUST_FAILURE.value,
+            FindingClassification.PROTOCOL_SUPPORT_ISSUE.value,
+        }:
+            return "transport"
+        if classification == FindingClassification.SOURCE_CRYPTO_ISSUE.value:
+            return "crypto_source"
+        if classification in {
+            FindingClassification.INFORMATIONAL_ASSET_INTELLIGENCE.value,
+            FindingClassification.EXTERNAL_INTELLIGENCE_FAILURE.value,
+        }:
+            return "reputation"
         haystack = " ".join([finding.title, finding.description, finding.source, finding.type, finding_key, " ".join(finding.tags)]).lower()
         if any(token in haystack for token in ("csp", "hsts", "xfo", "referrer", "permissions policy", "header")):
             return "browser"
@@ -106,10 +156,11 @@ class CorrelationEngine:
         category = self._threat_category(finding, finding_key)
         return {
             "browser": "web_application",
-            "transport": "transport_layer",
-            "reputation": "external_exposure",
+            "transport": "tls_pki_crypto_posture",
+            "reputation": "external_reputation",
             "technology": "stack_visibility",
             "secret": "credential_surface",
+            "crypto_source": "source_crypto_implementation",
             "dependency": "supply_chain",
             "exposure": "internet_exposure",
         }.get(category, "application")
@@ -124,6 +175,8 @@ class CorrelationEngine:
         return "low"
 
     def _incident_title(self, primary: RawFinding, threat_category: str) -> str:
+        if threat_category in {"transport", "secret"}:
+            return primary.title
         mapping = {
             "browser": "Browser Security Weakness",
             "transport": "Transport Security Weakness",
@@ -191,11 +244,18 @@ class CorrelationEngine:
             "description": finding.description,
             "source": finding.source,
             "severity": finding.severity,
+            "confidence": finding.confidence,
+            "confidence_label": finding.confidence_label,
             "location": finding.location,
             "target": finding.target,
+            "affected_asset": finding.affected_asset,
             "evidence": finding.evidence,
+            "remediation": finding.remediation,
+            "references": finding.references,
+            "compliance_mapping": finding.compliance_mapping,
             "tags": finding.tags,
             "rule_id": finding.raw_data.get("rule_id"),
+            "source_rule_id": finding.raw_data.get("source_rule_id") or finding.evidence.get("source_rule_id"),
         }
 
     def _severity_from_items(self, findings: list[RawFinding]) -> str:
@@ -210,6 +270,7 @@ class CorrelationEngine:
             "reputation": ["T1595"],
             "technology": ["T1046"],
             "secret": ["T1552"],
+            "crypto_source": ["T1573"],
             "dependency": ["T1195"],
             "exposure": ["T1595"],
         }
@@ -222,6 +283,7 @@ class CorrelationEngine:
             "reputation": ["CAPEC-406"],
             "technology": ["CAPEC-541"],
             "secret": ["CAPEC-37"],
+            "crypto_source": ["CAPEC-20"],
             "dependency": ["CAPEC-439"],
             "exposure": ["CAPEC-88"],
         }
@@ -234,6 +296,7 @@ class CorrelationEngine:
             "reputation": ["External exposure discovery -> targeted exploitation -> pivot to host intelligence"],
             "technology": ["Fingerprinting -> exploit matching -> public service abuse"],
             "secret": ["Secret discovery -> authentication bypass -> lateral movement"],
+            "crypto_source": ["Weak crypto implementation -> data exposure -> credential reuse"],
             "dependency": ["Known vulnerable package -> code execution -> downstream compromise"],
             "exposure": ["Open service discovery -> brute force or exploit -> foothold"],
         }.get(threat_category, ["Discovery -> validation -> exploitation"])
@@ -243,6 +306,7 @@ class CorrelationEngine:
             "browser": ["An attacker chains missing browser controls to stage a cross-site attack."],
             "transport": ["Traffic can be intercepted or downgraded because modern transport protections are incomplete."],
             "secret": ["A leaked secret could be reused to impersonate a trusted service or operator."],
+            "crypto_source": ["Weak cryptographic primitives in source code can expose protected data."],
             "dependency": ["A vulnerable dependency may allow remote exploitation after fingerprinting."],
             "exposure": ["An internet-exposed service may be probed and abused with commodity tooling."],
         }.get(threat_category, [finding.description])
@@ -254,6 +318,7 @@ class CorrelationEngine:
             "reputation": ["Targeted follow-on attacks"],
             "technology": ["Service pivoting"],
             "secret": ["Credential reuse across services"],
+            "crypto_source": ["Credential or data disclosure"],
             "dependency": ["Shared package compromise"],
             "exposure": ["Pivot from exposed service to internal assets"],
         }.get(threat_category, [])

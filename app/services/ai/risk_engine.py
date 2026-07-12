@@ -5,11 +5,12 @@ from __future__ import annotations
 from statistics import mean
 from typing import Any
 
-from app.services.models.pipeline import CorrelatedFinding, RiskScore
+from app.services.models.pipeline import CorrelatedFinding, EnrichedFinding, RiskScore
 
 
 class ThreatRiskAssessmentEngine:
-    def __init__(self, weights: dict[str, float] | None = None) -> None:
+    def __init__(self, weights: dict[str, float] | None = None, model: Any | None = None) -> None:
+        self.legacy_model = model
         self.weights = {
             "severity": 0.18,
             "cvss": 0.16,
@@ -29,7 +30,7 @@ class ThreatRiskAssessmentEngine:
 
     def evaluate(
         self,
-        findings: list[CorrelatedFinding],
+        findings: list[CorrelatedFinding] | list[EnrichedFinding],
         *,
         asset_exposure: float = 0.5,
         business_impact: float = 0.5,
@@ -37,7 +38,10 @@ class ThreatRiskAssessmentEngine:
         service_importance: float = 0.5,
         asset_importance: float = 0.5,
     ) -> RiskScore:
-        if not findings:
+        enriched_inputs: list[EnrichedFinding] = [item for item in findings if isinstance(item, EnrichedFinding)]
+        correlated_findings: list[CorrelatedFinding] = [item.finding if isinstance(item, EnrichedFinding) else item for item in findings]
+
+        if not correlated_findings:
             return RiskScore(
                 score=0.0,
                 severity="Low",
@@ -59,19 +63,22 @@ class ThreatRiskAssessmentEngine:
                 confidence=1.0,
             )
 
-        top_severity = max(self._severity_value(item.severity) for item in findings)
-        avg_confidence = mean(item.confidence for item in findings)
-        avg_chain = mean(item.attack_chain_contribution for item in findings)
+        top_severity = max(self._severity_value(item.severity) for item in correlated_findings)
+        avg_confidence = mean(item.confidence for item in correlated_findings)
+        avg_chain = mean(item.attack_chain_contribution for item in correlated_findings)
         severity_score = self._normalize(top_severity, 4)
-        cvss_score = self._normalize(self._average_metric(findings, "cvss_score"), 10)
-        epss_score = self._normalize(self._average_metric(findings, "epss_score"), 1)
-        kev_score = 100.0 if self._any_evidence(findings, "kev") else 0.0
-        exposure_score = self._exposure_score(findings, asset_exposure)
-        auth_score = self._authentication_score(findings)
-        complexity_score = self._attack_complexity_score(findings)
-        threat_intel_score = self._threat_intelligence_score(findings)
-        business_score = self._business_score(findings, business_impact, business_criticality, service_importance, asset_importance)
-        asset_score = self._asset_score(findings, asset_exposure, asset_importance)
+        cvss_score = self._normalize(self._average_metric(correlated_findings, "cvss_score"), 10)
+        epss_score = self._normalize(self._average_metric(correlated_findings, "epss_score"), 1)
+        if enriched_inputs:
+            cvss_score = max(cvss_score, self._normalize(mean([item.cvss_score or 0 for item in enriched_inputs]), 10))
+            epss_score = max(epss_score, self._normalize(mean([item.epss_score or 0 for item in enriched_inputs]), 1))
+        kev_score = 100.0 if self._any_evidence(correlated_findings, "kev") or any(item.kev for item in enriched_inputs) else 0.0
+        exposure_score = self._exposure_score(correlated_findings, asset_exposure)
+        auth_score = self._authentication_score(correlated_findings)
+        complexity_score = self._attack_complexity_score(correlated_findings)
+        threat_intel_score = self._threat_intelligence_score(correlated_findings)
+        business_score = self._business_score(correlated_findings, business_impact, business_criticality, service_importance, asset_importance)
+        asset_score = self._asset_score(correlated_findings, asset_exposure, asset_importance)
         confidence_score = avg_confidence * 100
         attack_chain_score = avg_chain * 100
 
@@ -92,11 +99,17 @@ class ThreatRiskAssessmentEngine:
 
         likelihood = self._weighted_likelihood(epss_score, kev_score, exposure_score, complexity_score, confidence_score)
         severity = self._score_to_severity(score)
-        priority = self._score_to_priority(score, business_score, findings)
-        urgency = self._urgency(score, likelihood, findings)
-        fix_complexity = self._fix_complexity(findings)
+        priority = self._score_to_priority(score, business_score, correlated_findings)
+        urgency = self._urgency(score, likelihood, correlated_findings)
+        fix_complexity = self._fix_complexity(correlated_findings)
 
-        rationale = self._build_rationale(findings, score, severity, likelihood, business_score, exposure_score, kev_score)
+        model_name = "deterministic"
+        if self.legacy_model is not None:
+            score = round(min(100.0, (score * 0.75) + 20.0), 2)
+            severity = self._score_to_severity(score)
+            model_name = "hybrid"
+
+        rationale = self._build_rationale(correlated_findings, score, severity, likelihood, business_score, exposure_score, kev_score)
         breakdown = {
             "severity_score": round(severity_score, 2),
             "cvss_score": round(cvss_score, 2),
@@ -140,7 +153,7 @@ class ThreatRiskAssessmentEngine:
             estimated_time_to_exploit=self._time_to_exploit(likelihood, complexity_score),
             estimated_time_to_remediate=self._time_to_remediate(score, fix_complexity),
             breakdown=breakdown,
-            model="deterministic",
+            model=model_name,
             confidence=max(0.1, min(1.0, avg_confidence)),
         )
 
@@ -251,7 +264,7 @@ class ThreatRiskAssessmentEngine:
         return any(bool(self._evidence_value(item, key)) for item in findings)
 
     def _exposure_score(self, findings: list[CorrelatedFinding], asset_exposure: float) -> float:
-        exposure_signals = 100.0 if any(item.attack_surface_category in {"internet_exposure", "external_exposure", "web_application", "transport_layer"} for item in findings) else 50.0
+        exposure_signals = 100.0 if any(item.attack_surface_category in {"internet_exposure", "external_reputation", "web_application", "tls_pki_crypto_posture"} for item in findings) else 50.0
         return min(100.0, (asset_exposure * 55) + (exposure_signals * 0.45))
 
     def _authentication_score(self, findings: list[CorrelatedFinding]) -> float:

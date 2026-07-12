@@ -17,7 +17,8 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 init_db = database.init_db
 close_db = database.close_db
+check_schema_current = database.check_schema_current
 async_session_maker = database.async_session_maker
 
 
-__all__ = ["get_db", "init_db", "close_db", "async_session_maker"]
+__all__ = ["get_db", "init_db", "close_db", "check_schema_current", "async_session_maker"]

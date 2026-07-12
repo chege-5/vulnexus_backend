@@ -248,7 +248,7 @@ class Vulnerability(Base):
     scan_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("scans.id"), index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     severity: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    rule_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rule_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     ml_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     cve_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     cvss_score: Mapped[float | None] = mapped_column(Float, nullable=True)

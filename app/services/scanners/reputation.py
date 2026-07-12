@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 from urllib.parse import urlparse
 
+from app.services.integrations.base import to_intelligence_result
 from app.services.integrations.manager import integration_manager
 from app.services.models.pipeline import ScanContext, ScanTarget
 from app.services.scanners.base import ScannerResult, TargetScanner
@@ -25,7 +26,13 @@ class ReputationScanner(TargetScanner):
         except Exception:
             ip_address = hostname
 
-        intelligence = await integration_manager.enrich_intelligence(ip_address, providers=["shodan", "censys", "abuseipdb", "greynoise", "ipinfo"], limit=5, context={"hostname": hostname})
+        responses = await integration_manager.lookup(ip_address, providers=["shodan", "censys", "abuseipdb", "greynoise", "ipinfo"], limit=5, context={})
+        intelligence = [to_intelligence_result(response, query=ip_address) for response in responses if response.success or response.cached]
+        provider_statuses = [
+            {"provider": response.provider, "success": False, "status_code": response.status_code, "error": response.error}
+            for response in responses
+            if not response.success
+        ]
         findings = []
         for item in intelligence:
             if not item.summary and not item.raw:
@@ -42,7 +49,7 @@ class ReputationScanner(TargetScanner):
                 target=target.value,
                 tags=["reputation", item.provider.lower()],
             ))
-        return ScannerResult(findings=findings, metadata={"ip_address": ip_address})
+        return ScannerResult(findings=findings, metadata={"ip_address": ip_address, "provider_statuses": provider_statuses})
 
     def _looks_like_ip(self, value: str) -> bool:
         return value.count(".") == 3 or ":" in value

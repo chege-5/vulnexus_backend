@@ -1,5 +1,6 @@
 import asyncio
 from urllib.parse import urlparse
+import httpx
 from app.models.pydantic_models import CryptoFeatures, RuleVulnerability
 from app.core.http_client import create_async_client, request_with_retry
 from app.utils.tls_utils import get_tls_info, check_hsts, TLSInfo
@@ -138,10 +139,8 @@ async def _call_ssl_labs(hostname: str) -> list[RuleVulnerability]:
 async def _check_security_headers(url: str) -> list[RuleVulnerability]:
     vulns = []
     try:
-        async with create_async_client(timeout=10) as client:
-            r = await request_with_retry(client, "GET", url)
-        if r is None:
-            return vulns
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url)
         headers_lower = {k.lower(): v for k, v in r.headers.items()}
 
         checks = [
