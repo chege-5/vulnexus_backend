@@ -94,6 +94,8 @@ class ScanOrchestrator:
             if not scan:
                 raise ValueError(f"Scan {scan_id} not found")
 
+            logger.info("Scan start scan_id=%s type=%s", scan_id, scan.type)
+
             target = self._build_target(scan, source_path=source_path, options=options)
             context = ScanContext(
                 scan_id=scan.id,
@@ -119,18 +121,33 @@ class ScanOrchestrator:
                 raw_findings.extend(await self._execute_github_pipeline(context))
             else:
                 raise ValueError(f"Unsupported scan type: {scan.type}")
+            logger.info("Scanner completion scan_id=%s findings=%s", scan_id, len(raw_findings))
 
             await self._raise_if_canceled(scan.id)
             await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, message="Correlating findings", progress=70)
             correlated = await self.correlation_engine.correlate(raw_findings)
+            displayed = self._display_findings(raw_findings, correlated)
+            logger.info(
+                "Correlation complete scan_id=%s raw_findings=%s displayed_findings=%s correlated_vulnerabilities=%s score_inputs=%s",
+                scan_id,
+                len(raw_findings),
+                len(displayed),
+                len(correlated),
+                len(correlated),
+            )
 
             await self._raise_if_canceled(scan.id)
             await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, message="Calculating risk", progress=80)
             risk = self.ai_engine.evaluate(correlated)
 
             await self._raise_if_canceled(scan.id)
-            await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, message="Enriching intelligence", progress=88)
-            enriched = await asyncio.gather(*(knowledge_engine.enrich(item, risk=risk.model_dump()) for item in correlated))
+            # AI explanations are opt-in post-scan work by default.  The
+            # deterministic scan is persisted and completed independently.
+            await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, message="Saving findings", progress=88)
+            if settings.ENABLE_AI_DURING_SCAN and settings.ENABLE_AI_ENRICHMENT:
+                enriched = await asyncio.gather(*(knowledge_engine.enrich(item, risk=risk.model_dump()) for item in displayed))
+            else:
+                enriched = [EnrichedFinding(finding=item) for item in displayed]
 
             try:
                 await self._persist_results(db, scan, context, enriched, risk)
@@ -166,11 +183,63 @@ class ScanOrchestrator:
                 "overall_score": risk.score,
                 "risk": risk.model_dump(),
                 "findings": [item.model_dump() for item in enriched],
+                "metadata": scan.result_metadata or {},
             }
+
+    def _display_findings(self, raw_findings: list[RawFinding], correlated: list[CorrelatedFinding]) -> list[CorrelatedFinding]:
+        """Keep each raw scanner result visible while retaining correlation for risk."""
+        memberships = {
+            raw.id: incident
+            for incident in correlated
+            for raw in incident.raw_findings
+        }
+        displayed: list[CorrelatedFinding] = []
+        for raw in raw_findings:
+            parent = memberships.get(raw.id)
+            rule_id = str(raw.raw_data.get("rule_id") or raw.evidence.get("rule_id") or "VN-SCANNER-FINDING")
+            displayed.append(
+                CorrelatedFinding(
+                    group_key=f"raw:{raw.id}",
+                    correlation_id=parent.correlation_id if parent else None,
+                    contributing_rule_ids=[rule_id],
+                    title=raw.title,
+                    description=raw.description,
+                    severity=raw.severity,
+                    threat_category=parent.threat_category if parent else "general",
+                    attack_surface_category=parent.attack_surface_category if parent else "unknown",
+                    risk_category=parent.risk_category if parent else "medium",
+                    classification=raw.classification,
+                    cwe_ids=parent.cwe_ids if parent else [],
+                    related_cves=parent.related_cves if parent else [],
+                    related_assets=[value for value in [raw.affected_asset, raw.target, raw.location] if value],
+                    related_technologies=parent.related_technologies if parent else [],
+                    mitre_attack=parent.mitre_attack if parent else [],
+                    capec=parent.capec if parent else [],
+                    possible_attack_paths=parent.possible_attack_paths if parent else [],
+                    possible_attack_scenarios=parent.possible_attack_scenarios if parent else [],
+                    potential_lateral_movement=parent.potential_lateral_movement if parent else [],
+                    exploitation_difficulty=parent.exploitation_difficulty if parent else "moderate",
+                    detection_difficulty=parent.detection_difficulty if parent else "moderate",
+                    attack_chain_contribution=parent.attack_chain_contribution if parent else 0.0,
+                    requires_cve_lookup=parent.requires_cve_lookup if parent else False,
+                    primary_source=raw.source,
+                    sources=[raw.source],
+                    evidence={**raw.evidence, **raw.raw_data},
+                    evidence_items=[{"title": raw.title, "rule_id": rule_id, "severity": raw.severity, "location": raw.location}],
+                    tags=raw.tags,
+                    confidence=raw.confidence,
+                    raw_findings=[raw],
+                )
+            )
+        return displayed
 
     async def _execute_url_pipeline(self, context: ScanContext) -> list[RawFinding]:
         scanners = [self._scanner_instances["tls"], self._scanner_instances["headers"], self._scanner_instances["dns"], self._scanner_instances["technology"], self._scanner_instances["reputation"], self._scanner_instances["web_crawl"], self._scanner_instances["compliance"]]
         results = await self._run_scanners(scanners, context)
+        for scanner, result in zip(scanners, results):
+            if scanner.name == "reputation":
+                context.options["scan_result_metadata"] = {"reputation": result.metadata}
+                break
         return [finding for result in results for finding in result.findings]
 
     async def _execute_file_pipeline(self, context: ScanContext) -> list[RawFinding]:
@@ -211,11 +280,14 @@ class ScanOrchestrator:
     async def _run_scanners(self, scanners: list[Any], context: ScanContext) -> list[Any]:
         if settings.ENABLE_PARALLEL_SCANNERS:
             tasks = [self._scan_safe(scanner, context) for scanner in scanners if scanner.supports(context.target)]
-            return await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks)
+            logger.info("Scanner group complete scan_id=%s scanners=%s", context.scan_id, len(results))
+            return results
         results = []
         for scanner in scanners:
             if scanner.supports(context.target):
                 results.append(await self._scan_safe(scanner, context))
+                logger.info("Scanner complete scan_id=%s scanner=%s", context.scan_id, getattr(scanner, "name", scanner.__class__.__name__))
         return results
 
     async def _scan_safe(self, scanner, context: ScanContext) -> ScannerResult:
@@ -227,6 +299,7 @@ class ScanOrchestrator:
             return ScannerResult(findings=[], metadata={"scanner": scanner_name, "error": str(exc), "failed": True})
 
     async def _persist_results(self, db, scan: Scan, context: ScanContext, findings: list[EnrichedFinding], risk) -> None:
+        scan.result_metadata = context.options.get("scan_result_metadata") or {}
         cve_entries: dict[str, CVEEntry] = {}
         known_exploit_count = 0
         vulnerability_payloads: list[dict[str, Any]] = []
@@ -305,6 +378,7 @@ class ScanOrchestrator:
 
         try:
             await db.commit()
+            logger.info("Findings DB commit scan_id=%s vulnerabilities=%s", scan.id, len(vulnerability_records))
         except SQLAlchemyError as exc:
             await db.rollback()
             logger.exception("Failed to persist validated findings for scan %s", scan.id)
@@ -328,20 +402,22 @@ class ScanOrchestrator:
             verdict=final_verdict,
             vulnerabilities=vulnerability_payloads,
         )
-        await asyncio.to_thread(
-            build_report,
-            scan_id=scan.id,
-            target=scan.target,
-            scan_type=scan.type,
-            overall_score=risk.score,
-            vulnerabilities=vulnerability_payloads,
-            cve_details=cve_details,
-            compliance_checks=compliance_checks,
-            audit_verdict=final_verdict,
-            ai_insight=ai_insight,
-            started_at=scan.started_at,
-            finished_at=datetime.now(timezone.utc),
-        )
+        if settings.ENABLE_REPORT_GENERATION_DURING_SCAN:
+            await asyncio.to_thread(
+                build_report,
+                scan_id=scan.id,
+                target=scan.target,
+                scan_type=scan.type,
+                overall_score=risk.score,
+                vulnerabilities=vulnerability_payloads,
+                cve_details=cve_details,
+                compliance_checks=compliance_checks,
+                audit_verdict=final_verdict,
+                ai_insight=ai_insight,
+                provider_statuses=((scan.result_metadata or {}).get("reputation") or {}).get("provider_statuses") or [],
+                started_at=scan.started_at,
+                finished_at=datetime.now(timezone.utc),
+            )
 
     def _validated_vulnerability_record(
         self,
@@ -622,6 +698,7 @@ class ScanOrchestrator:
             if value is not None:
                 setattr(scan, key, value)
         await db.commit()
+        logger.info("Scan DB commit scan_id=%s status=%s", scan.id, scan.status)
 
     async def _store_progress(self, context: ScanContext, **updates) -> None:
         progress = ScanProgress(scan_id=context.scan_id, status=updates.get("status", "queued"), progress=updates.get("progress", context.progress), stage=updates.get("stage", context.stage), message=updates.get("message"), started_at=updates.get("started_at"), finished_at=updates.get("finished_at"), error_message=updates.get("error_message"), details=updates.get("details", {}))

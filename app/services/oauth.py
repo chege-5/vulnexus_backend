@@ -139,7 +139,7 @@ def build_github_auth_url(state: str, redirect_uri: Optional[str] = None) -> str
         "client_id": settings.GITHUB_CLIENT_ID,
         "redirect_uri": redirect_uri or settings.GITHUB_REDIRECT_URI,
         "response_type": "code",
-        "scope": "read:user user:email read:org repo",
+        "scope": settings.GITHUB_OAUTH_SCOPE,
         "state": state,
         "allow_signup": "true",
     }

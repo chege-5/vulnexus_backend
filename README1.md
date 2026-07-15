@@ -65,6 +65,17 @@ python scripts/train_model.py
 uvicorn app.main:app --reload
 ```
 
+### Windows Celery worker
+
+Run the worker in a separate PowerShell window after Redis is available. The
+worker mode uses `NullPool` and disposes its async engine after every task, so
+asyncpg connections cannot cross closed Windows/solo event loops.
+
+```powershell
+$env:VULNEXUS_CELERY_WORKER = '1'
+celery -A app.celery_app worker -P solo -l info --concurrency=1 --prefetch-multiplier=1 --without-gossip --without-mingle --without-heartbeat
+```
+
 ## API Endpoints
 
 | Method | Endpoint | Description |

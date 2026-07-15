@@ -162,10 +162,10 @@ async def test_shodan_403_and_censys_401_are_provider_failures():
             return self.response
 
     shodan = ShodanProvider(ProviderSettings(name="shodan", api_key="key", endpoint="https://shodan.example"))
-    censys = CensysProvider(ProviderSettings(name="censys", api_key="secret", endpoint="https://censys.example", extra={"api_id": "id"}))
+    censys = CensysProvider(ProviderSettings(name="censys", api_key="pat", endpoint="https://api.platform.censys.io/v3/global"))
 
-    shodan_response = await shodan.lookup(Client(Response(403, "forbidden")), "203.0.113.10")
-    censys_response = await censys.lookup(Client(Response(401, "unauthorized")), "203.0.113.10")
+    shodan_response = await shodan.lookup(Client(Response(403, "forbidden")), "8.8.8.8")
+    censys_response = await censys.lookup(Client(Response(401, "unauthorized")), "8.8.8.8")
 
     assert shodan_response.success is False
     assert shodan_response.status_code == 403

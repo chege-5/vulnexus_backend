@@ -10,6 +10,7 @@ from app.core.http_client import create_async_client
 from app.config import settings
 from app.services.integrations.cache import cache
 from app.services.models.pipeline import IntelligenceResult, ProviderResponse
+from app.utils.redaction import redact_text
 
 
 @dataclass(slots=True)
@@ -102,7 +103,7 @@ class ProviderAdapter(ABC):
             query=query,
             enabled=self.enabled,
             success=False,
-            error=str(last_error) if last_error else "Provider lookup failed",
+            error=redact_text(last_error) if last_error else "Provider lookup failed",
         )
 
     async def _sleep_backoff(self, attempt: int) -> None:

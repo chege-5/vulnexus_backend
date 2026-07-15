@@ -68,7 +68,9 @@ class HeaderScanner(TargetScanner):
     supported_kinds = {"url"}
 
     async def scan(self, target: ScanTarget, context: ScanContext) -> ScannerResult:
-        async with create_async_client(timeout=settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS) as client:
+        # Target admission happens before queueing. Do not follow redirects here:
+        # a public URL can redirect the worker to a private address after admission.
+        async with create_async_client(timeout=settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS, follow_redirects=False) as client:
             response = await request_with_retry(client, "GET", target.value)
         if response is None:
             return ScannerResult(metadata={"error": "Unable to fetch response headers"})

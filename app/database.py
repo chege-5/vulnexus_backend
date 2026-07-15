@@ -6,6 +6,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 from app.config import settings
 
@@ -15,7 +16,12 @@ class Base(DeclarativeBase):
 
 
 def _create_engine(database_url: str):
-    return create_async_engine(database_url, echo=False, pool_pre_ping=True)
+    engine_options = {"echo": False, "pool_pre_ping": True}
+    if settings.VULNEXUS_CELERY_WORKER:
+        # A solo Celery worker owns short-lived event loops. Do not retain
+        # asyncpg connections between task loops.
+        engine_options["poolclass"] = NullPool
+    return create_async_engine(database_url, **engine_options)
 
 
 engine = _create_engine(settings.DATABASE_URL)

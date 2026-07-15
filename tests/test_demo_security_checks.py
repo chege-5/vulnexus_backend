@@ -38,7 +38,7 @@ def test_hardcoded_keys_fixture_produces_masked_finding():
     evidence = json.dumps(secret.evidence)
     assert "AKIAIOSFODNN7EXAMPLE" not in evidence
     assert "demo_password" not in evidence
-    assert "..." in evidence
+    assert "[REDACTED]" in evidence
 
 
 def test_insecure_randomness_fixture_produces_finding():

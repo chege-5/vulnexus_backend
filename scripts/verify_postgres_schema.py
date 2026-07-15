@@ -30,8 +30,22 @@ async def main() -> None:
             {"table_name": "vulnerabilities", "column_name": "rule_id"},
         )
         length = result.scalar_one()
+        ai_result = await conn.execute(
+            text(
+                """
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'vulnerabilities'
+                  AND column_name IN ('ai_explanation', 'ai_explanation_updated_at')
+                ORDER BY column_name
+                """
+            )
+        )
+        ai_columns = ai_result.all()
     await close_db()
     print(f"vulnerabilities.rule_id length={length}")
+    print("vulnerabilities.ai_explanation columns=" + ", ".join(f"{name}:{data_type}" for name, data_type in ai_columns))
 
 
 if __name__ == "__main__":

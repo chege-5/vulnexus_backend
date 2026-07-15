@@ -14,7 +14,8 @@ class WebCrawlScanner(TargetScanner):
     supported_kinds = {"url"}
 
     async def scan(self, target: ScanTarget, context: ScanContext) -> ScannerResult:
-        async with create_async_client(timeout=settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS) as client:
+        # Crawling redirects could otherwise bypass initial public-address validation.
+        async with create_async_client(timeout=settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS, follow_redirects=False) as client:
             response = await request_with_retry(client, "GET", target.value)
         if response is None:
             return ScannerResult(metadata={"error": "Unable to crawl target"})

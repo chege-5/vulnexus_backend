@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import re
 from typing import Any
 
 from app.services.models.pipeline import RawFinding, ScanContext, ScanTarget
@@ -46,7 +47,10 @@ class TargetScanner(ABC):
         raw_data: dict[str, Any] | None = None,
         target: str | None = None,
     ) -> RawFinding:
-        raw = raw_data or {}
+        raw = dict(raw_data or {})
+        # Every scanner finding carries a scanner-originated stable ID. This
+        # remains distinct from correlation identifiers used later in the flow.
+        raw.setdefault("rule_id", self._stable_rule_id(title))
         classification = str(raw.get("classification") or "unknown")
         mapping = compliance_mapping or {}
         if not mapping and raw.get("rule_id"):
@@ -85,3 +89,8 @@ class TargetScanner(ABC):
             except Exception:
                 pass
         return finding
+
+    def _stable_rule_id(self, title: str) -> str:
+        scanner = re.sub(r"[^A-Z0-9]+", "-", self.name.upper()).strip("-") or "SCANNER"
+        label = re.sub(r"[^A-Z0-9]+", "-", title.upper()).strip("-") or "FINDING"
+        return f"VN-{scanner}-{label}"[:255]

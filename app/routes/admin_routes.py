@@ -12,9 +12,11 @@ from app.auth import require_role
 from app.models.db_models import User, Scan, Vulnerability, Notification, ScanStatus, Severity
 from app.services.integrations import integration_manager
 from app.services.rbac import log_audit_event
+from app.utils.logger import get_logger
 
 router = APIRouter()
 admin_dependency = Depends(require_role("admin"))
+logger = get_logger(__name__)
 
 
 class UserApprovalRequest(BaseModel):
@@ -138,10 +140,14 @@ async def send_communication(body: CommunicationRequest, request: Request, db: A
     await log_audit_event(db, None, "admin.communicate", "notification", body.user_id, {"title": body.title, "type": body.type, "send_email": body.send_email}, request.client.host if request.client else None)
     await db.commit()
 
-    if body.user_id:
-        print(f"[EMAIL] To: {body.user_id} | Subject: {body.title} | Content: {body.message}")
-    else:
-        print(f"[EMAIL] Broadcast To All | Subject: {body.title} | Content: {body.message}")
+    # Notification content is user-controlled and must never be echoed to a
+    # terminal: it may contain credentials shared during incident response.
+    logger.info(
+        "Notification queued audience=%s email_requested=%s type=%s",
+        "user" if body.user_id else "broadcast",
+        body.send_email,
+        body.type,
+    )
 
     return {"message": "Communication sent successfully", "email_sent": body.send_email}
 

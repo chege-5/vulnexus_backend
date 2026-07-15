@@ -189,6 +189,22 @@ class LLMIntelligenceEngine:
             "retrieved_context": retrieved,
         }
 
+    def answer_report_question(self, *, question: str, report_context: dict[str, Any]) -> dict[str, str]:
+        """Answer a follow-up strictly from the completed scan-report context."""
+        title = f"Security report for {report_context.get('target') or 'scanned asset'}"
+        prompt = (
+            f"Answer this follow-up question about the completed VulNexus security report: {question}\n\n"
+            "Use only the supplied report context. If the context does not establish an answer, say so. "
+            "Do not invent CVEs, exploit status, affected assets, or remediation results."
+        )
+        answer = self.provider.generate(prompt=prompt, context=report_context)
+        return {
+            "answer": answer,
+            "provider": self.provider.name,
+            "label": "AI-assisted answer; validate against the scan evidence.",
+            "title": title,
+        }
+
     def _build_prompt(self, *, title: str, audience: str) -> str:
         return f"Explain the security finding {title} for {audience}. Use only Vulnexus evidence and retrieved references. Do not invent facts."
 

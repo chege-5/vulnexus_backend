@@ -4,6 +4,7 @@ import asyncio
 import socket
 from urllib.parse import urlparse
 
+from app.config import settings
 from app.services.models.pipeline import ScanContext, ScanTarget
 from app.services.scanners.base import ScannerResult, TargetScanner
 
@@ -19,7 +20,10 @@ class DNSScanner(TargetScanner):
             hostname = parsed.hostname or target.value
 
         try:
-            await asyncio.to_thread(socket.gethostbyname_ex, hostname)
+            await asyncio.wait_for(
+                asyncio.to_thread(socket.gethostbyname_ex, hostname),
+                timeout=settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             return ScannerResult(findings=[self._finding(
                 finding_type="dns",

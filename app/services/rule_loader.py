@@ -66,7 +66,8 @@ class RulePack:
 
 
 def default_rule_paths() -> list[Path]:
-    paths = [BASE_DIR / "app" / "scanner_rules" / "crypto_rules.yml"]
+    paths = sorted((BASE_DIR / "app" / "scanner_rules").glob("*.yml"))
+    paths.extend(sorted((BASE_DIR / "app" / "scanner_rules").glob("*.yaml")))
     custom_dir = BASE_DIR / "scanner_rules"
     if custom_dir.exists():
         paths.extend(sorted(custom_dir.glob("*.yml")))

@@ -310,6 +310,25 @@ footer {
 </section>
 {% endif %}
 
+{% if provider_statuses %}
+<section class="section">
+    <h2>External Intelligence Provider Status</h2>
+    <p class="muted">Provider restrictions do not invalidate the completed scan. They are recorded here so the report does not imply unavailable data was retrieved.</p>
+    <table>
+        <thead><tr><th>Provider</th><th>Status</th><th>Details</th></tr></thead>
+        <tbody>
+        {% for status in provider_statuses %}
+            <tr>
+                <td>{{ status.provider }}</td>
+                <td>{{ status.status or 'skipped' }}</td>
+                <td>{{ status.message or status.error or 'No usable provider data was returned.' }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endif %}
+
 <section class="section">
     <h2>Compliance Mapping</h2>
     <p class="muted">Each finding should be reviewed against OWASP Top 10, OWASP ASVS, NIST, CWE, CVE/CVSS, MITRE ATT&amp;CK, and CIS Controls where relevant.</p>
@@ -628,9 +647,16 @@ def generate_html_report(
     compliance_checks: list[dict] | None = None,
     audit_verdict: dict | None = None,
     ai_insight: dict | None = None,
+    provider_statuses: list[dict] | None = None,
     started_at: Optional[str] = None,
     finished_at: Optional[str] = None,
 ) -> str:
+    target = redact_text(target)
+    cve_details = redact_data(cve_details)
+    compliance_checks = redact_data(compliance_checks or [])
+    audit_verdict = redact_data(audit_verdict or {})
+    ai_insight = redact_data(ai_insight or {})
+    provider_statuses = redact_data(provider_statuses or [])
     vulnerabilities = prepare_findings_for_report(vulnerabilities)
 
     severity_counts = {}
@@ -663,6 +689,7 @@ def generate_html_report(
         cve_details=cve_details,
         compliance_checks=compliance_checks or [],
         ai_insight=ai_insight,
+        provider_statuses=provider_statuses or [],
         verdict_reason=(audit_verdict or {}).get("reason"),
         overall_verdict=(audit_verdict or {}).get("verdict") or ("Critical" if overall_score >= 75 else "High" if overall_score >= 50 else "Medium" if overall_score >= 25 else "Low"),
     )
@@ -678,6 +705,7 @@ def generate_report_html_document(
     compliance_checks: list[dict] | None = None,
     audit_verdict: dict | None = None,
     ai_insight: dict | None = None,
+    provider_statuses: list[dict] | None = None,
     started_at=None,
     finished_at=None,
 ) -> str:
@@ -691,6 +719,7 @@ def generate_report_html_document(
         compliance_checks=compliance_checks,
         audit_verdict=audit_verdict,
         ai_insight=ai_insight,
+        provider_statuses=provider_statuses,
         started_at=str(started_at) if started_at else None,
         finished_at=str(finished_at) if finished_at else None,
     )
@@ -706,6 +735,7 @@ def build_report_payload(
     compliance_checks: list[dict] | None = None,
     audit_verdict: dict | None = None,
     ai_insight: dict | None = None,
+    provider_statuses: list[dict] | None = None,
     started_at=None,
     finished_at=None,
 ) -> dict:
@@ -719,7 +749,7 @@ def build_report_payload(
     passed_checks = sum(1 for item in (compliance_checks or []) if item.get("result") == "pass")
     compliance_score = round((passed_checks / total_checks) * 100, 2) if total_checks else None
 
-    return {
+    return redact_data({
         "report_id": str(scan_id),
         "target": target,
         "scan_type": scan_type,
@@ -736,6 +766,7 @@ def build_report_payload(
         "compliance_checks": compliance_checks or [],
         "compliance_score": compliance_score,
         "ai_insight": ai_insight,
+        "provider_statuses": provider_statuses or [],
         "recommendations": [
             "Replace MD5/SHA-1 with SHA-256 or SHA-3",
             "Replace DES/3DES/RC2 with AES-256-GCM",
@@ -745,7 +776,7 @@ def build_report_payload(
             "Use CA-trusted certificates with correct SANs and automated renewal",
             "Store secrets in a managed vault",
         ],
-    }
+    })
 
 
 def generate_pdf_report(html_content: str, output_path: str) -> str:
@@ -789,6 +820,7 @@ def build_report(
     compliance_checks: list[dict] | None = None,
     audit_verdict: dict | None = None,
     ai_insight: dict | None = None,
+    provider_statuses: list[dict] | None = None,
     started_at=None,
     finished_at=None,
 ) -> str:
@@ -805,6 +837,7 @@ def build_report(
         compliance_checks=compliance_checks,
         audit_verdict=audit_verdict,
         ai_insight=ai_insight,
+        provider_statuses=provider_statuses,
         started_at=started_at,
         finished_at=finished_at,
     )
@@ -831,6 +864,14 @@ def generate_markdown_report(payload: dict) -> str:
         "",
         "## Findings",
     ]
+    provider_statuses = payload.get("provider_statuses") or []
+    if provider_statuses:
+        lines.extend(["", "## External Intelligence Provider Status"])
+        for status in provider_statuses:
+            lines.append(
+                f"- {status.get('provider', 'Provider')}: {status.get('status', 'skipped')} — "
+                f"{status.get('message') or status.get('error') or 'No usable provider data was returned.'}"
+            )
     for finding in payload.get("vulnerabilities", []):
         lines.extend([
             f"### {finding.get('display_title') or get_finding_title(finding)}",
@@ -863,21 +904,27 @@ def generate_markdown_report(payload: dict) -> str:
 
 def generate_csv_report(payload: dict, output_path: str) -> str:
     payload = redact_data(payload)
+
+    def csv_safe(value) -> str:
+        """Prevent spreadsheet applications from interpreting untrusted cells as formulas."""
+        text = "" if value is None else str(value)
+        return f"'{text}" if text.lstrip().startswith(("=", "+", "-", "@")) else text
+
     with open(output_path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["finding", "severity", "confidence", "description", "risk_score", "cve", "cvss", "remediation", "affected_asset", "evidence"])
         for finding in payload.get("vulnerabilities", []):
             writer.writerow([
-                finding.get("display_title") or get_finding_title(finding),
-                finding.get("severity"),
-                finding.get("display_confidence") or _format_confidence(finding.get("confidence")),
-                finding.get("description"),
-                finding.get("ml_score"),
-                finding.get("display_cve") or finding.get("cve_id") or "Not Applicable",
-                finding.get("display_cvss") or _format_cvss(finding.get("cvss_score")),
-                finding.get("remediation"),
-                finding.get("display_location") or finding.get("file_path") or "Not Applicable",
-                finding.get("display_evidence") or _format_evidence(finding.get("evidence")),
+                csv_safe(finding.get("display_title") or get_finding_title(finding)),
+                csv_safe(finding.get("severity")),
+                csv_safe(finding.get("display_confidence") or _format_confidence(finding.get("confidence"))),
+                csv_safe(finding.get("description")),
+                csv_safe(finding.get("ml_score")),
+                csv_safe(finding.get("display_cve") or finding.get("cve_id") or "Not Applicable"),
+                csv_safe(finding.get("display_cvss") or _format_cvss(finding.get("cvss_score"))),
+                csv_safe(finding.get("remediation")),
+                csv_safe(finding.get("display_location") or finding.get("file_path") or "Not Applicable"),
+                csv_safe(finding.get("display_evidence") or _format_evidence(finding.get("evidence"))),
             ])
     return output_path
 
@@ -931,19 +978,81 @@ def export_report_document(payload: dict, output_path: str, format: str) -> str:
 
 
 def _build_docx_document_xml(payload: dict) -> str:
-    paragraphs = [
-        f"VulNexus Security Report - {payload.get('target', 'Unknown Target')}",
-        f"Overall Risk: {payload.get('overall_score', 0)} / 100",
-        f"Verdict: {payload.get('overall_verdict', 'Low')}",
-        f"Executive Summary: {payload.get('ai_insight', {}).get('summary', 'No executive summary available.')}",
+    target = payload.get("target", "Unknown Target")
+    severity_counts = payload.get("severity_counts", {})
+    ai_summary = (payload.get("ai_insight") or {}).get("summary") or "No executive summary available."
+    body = [
+        _docx_paragraph("VulNexus Security Report", size=34, bold=True, color="1D4ED8"),
+        _docx_paragraph(str(target), size=24, bold=True),
+        _docx_paragraph(f"Generated: {payload.get('generated_at', 'Not Applicable')}"),
+        _docx_paragraph(f"Overall risk: {payload.get('overall_score', 0)} / 100 | Verdict: {payload.get('overall_verdict', 'Low')}", bold=True),
+        _docx_paragraph("Executive Summary", size=24, bold=True, color="0F172A"),
+        _docx_paragraph(ai_summary),
+        _docx_paragraph("Risk Distribution", size=22, bold=True, color="0F172A"),
+        _docx_table(
+            ["Critical", "High", "Medium", "Low", "Total Findings"],
+            [[
+                severity_counts.get("Critical", 0),
+                severity_counts.get("High", 0),
+                severity_counts.get("Medium", 0),
+                severity_counts.get("Low", 0),
+                payload.get("vulnerability_count", 0),
+            ]],
+        ),
+        _docx_paragraph("Prioritized Findings and Remediation", size=22, bold=True, color="0F172A"),
     ]
-    for finding in payload.get("vulnerabilities", [])[:20]:
-        paragraphs.append(f"Finding: {finding.get('display_title') or get_finding_title(finding)} - {finding.get('severity', 'Unknown')}")
-        paragraphs.append(f"Description: {finding.get('description', '')}")
-        paragraphs.append(f"Evidence: {finding.get('display_evidence') or _format_evidence(finding.get('evidence'))}")
-        paragraphs.append(f"Mitigation: {finding.get('remediation') or 'Review and remediate.'}")
-    body = "".join(f"<w:p><w:r><w:t>{escape(text)}</w:t></w:r></w:p>" for text in paragraphs)
-    return f"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>{body}<w:sectPr><w:pgSz w:w=\"12240\" w:h=\"15840\"/><w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\"/></w:sectPr></w:body></w:document>"
+    for index, finding in enumerate(payload.get("vulnerabilities", [])[:30], start=1):
+        title = finding.get("display_title") or get_finding_title(finding)
+        body.extend([
+            _docx_paragraph(f"{index}. {title}", size=20, bold=True, color=_docx_severity_color(finding.get("severity"))),
+            _docx_paragraph(f"Severity: {finding.get('severity', 'Unknown')} | Confidence: {finding.get('display_confidence', 'Not Applicable')}", bold=True),
+            _docx_paragraph(f"Affected asset: {finding.get('display_location') or finding.get('file_path') or target}"),
+            _docx_paragraph(f"Evidence: {finding.get('display_evidence') or _format_evidence(finding.get('evidence'))}"),
+            _docx_paragraph(f"Remediation: {finding.get('remediation') or 'Review and remediate.'}"),
+            _docx_paragraph("Verification: rerun the same scan, confirm this rule no longer appears, and review related findings before closing."),
+        ])
+    body.extend([
+        _docx_paragraph("General Remediation Checklist", size=22, bold=True, color="0F172A"),
+        _docx_paragraph("1. Fix critical and high findings first."),
+        _docx_paragraph("2. Rotate exposed or hardcoded secrets after removal."),
+        _docx_paragraph("3. Add regression tests or configuration checks for corrected weaknesses."),
+        _docx_paragraph("4. Regenerate reports after validation so evidence remains current."),
+    ])
+    return (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+        f"<w:body>{''.join(body)}"
+        "<w:sectPr><w:pgSz w:w=\"12240\" w:h=\"15840\"/><w:pgMar w:top=\"1080\" w:right=\"1080\" w:bottom=\"1080\" w:left=\"1080\"/></w:sectPr>"
+        "</w:body></w:document>"
+    )
+
+
+def _docx_paragraph(text: str, *, size: int = 20, bold: bool = False, color: str = "0F172A") -> str:
+    bold_xml = "<w:b/>" if bold else ""
+    return (
+        "<w:p><w:pPr><w:spacing w:after=\"160\"/></w:pPr><w:r>"
+        f"<w:rPr>{bold_xml}<w:color w:val=\"{color}\"/><w:sz w:val=\"{size}\"/></w:rPr>"
+        f"<w:t>{escape(str(text))}</w:t></w:r></w:p>"
+    )
+
+
+def _docx_table(headers: list[str], rows: list[list[object]]) -> str:
+    def cell(value: object, *, header: bool = False) -> str:
+        fill = "<w:shd w:fill=\"DBEAFE\"/>" if header else ""
+        return f"<w:tc><w:tcPr>{fill}</w:tcPr>{_docx_paragraph(str(value), bold=header)}</w:tc>"
+
+    header_row = "<w:tr>" + "".join(cell(header, header=True) for header in headers) + "</w:tr>"
+    row_xml = "".join("<w:tr>" + "".join(cell(value) for value in row) + "</w:tr>" for row in rows)
+    return f"<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/><w:tblBorders><w:top w:val=\"single\" w:sz=\"4\"/><w:left w:val=\"single\" w:sz=\"4\"/><w:bottom w:val=\"single\" w:sz=\"4\"/><w:right w:val=\"single\" w:sz=\"4\"/><w:insideH w:val=\"single\" w:sz=\"4\"/><w:insideV w:val=\"single\" w:sz=\"4\"/></w:tblBorders></w:tblPr>{header_row}{row_xml}</w:tbl>"
+
+
+def _docx_severity_color(severity: str | None) -> str:
+    return {
+        "Critical": "991B1B",
+        "High": "C2410C",
+        "Medium": "A16207",
+        "Low": "166534",
+    }.get(str(severity), "1D4ED8")
 
 
 def _docx_content_types() -> str:

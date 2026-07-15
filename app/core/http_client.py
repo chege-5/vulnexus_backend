@@ -10,6 +10,7 @@ import httpx
 
 from app.config import settings
 from app.utils.logger import get_logger
+from app.utils.redaction import redact_log_message, redact_url
 
 logger = get_logger(__name__)
 
@@ -100,14 +101,14 @@ async def request_with_retry(
             return await client.request(method, url, **kwargs)
         except Exception as exc:  # pragma: no cover - network conditions are environment dependent
             if _is_ssl_verification_error(exc):
-                active_logger.warning("SSL verification failed for %s %s: %s", method, url, exc)
+                active_logger.warning("SSL verification failed method=%s url=%s error=%s", method, redact_url(url), redact_log_message(exc))
                 return None
             if _is_transient_error(exc) and attempt + 1 < attempts:
                 delay = base_delay * (2**attempt)
-                active_logger.warning("Transient HTTP error for %s %s (attempt %s/%s): %s", method, url, attempt + 1, attempts, exc)
+                active_logger.warning("Transient HTTP error method=%s url=%s attempt=%s/%s error=%s", method, redact_url(url), attempt + 1, attempts, redact_log_message(exc))
                 await asyncio.sleep(delay)
                 continue
-            active_logger.warning("HTTP request failed for %s %s: %s", method, url, exc)
+            active_logger.warning("HTTP request failed method=%s url=%s error=%s", method, redact_url(url), redact_log_message(exc))
             return None
 
     return None
@@ -132,14 +133,14 @@ def request_with_retry_sync(
             return client.request(method, url, **kwargs)
         except Exception as exc:  # pragma: no cover - network conditions are environment dependent
             if _is_ssl_verification_error(exc):
-                active_logger.warning("SSL verification failed for %s %s: %s", method, url, exc)
+                active_logger.warning("SSL verification failed method=%s url=%s error=%s", method, redact_url(url), redact_log_message(exc))
                 return None
             if _is_transient_error(exc) and attempt + 1 < attempts:
                 delay = base_delay * (2**attempt)
-                active_logger.warning("Transient HTTP error for %s %s (attempt %s/%s): %s", method, url, attempt + 1, attempts, exc)
+                active_logger.warning("Transient HTTP error method=%s url=%s attempt=%s/%s error=%s", method, redact_url(url), attempt + 1, attempts, redact_log_message(exc))
                 time.sleep(delay)
                 continue
-            active_logger.warning("HTTP request failed for %s %s: %s", method, url, exc)
+            active_logger.warning("HTTP request failed method=%s url=%s error=%s", method, redact_url(url), redact_log_message(exc))
             return None
 
     return None

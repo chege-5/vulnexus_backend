@@ -61,11 +61,28 @@ class IntegrationManager:
             enabled=enabled,
             api_key=api_key,
             endpoint=endpoint,
-            timeout_seconds=settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS,
+            timeout_seconds=self._timeout_for(provider_key),
             retry_attempts=settings.INTELLIGENCE_RETRY_ATTEMPTS,
             retry_backoff_seconds=settings.INTELLIGENCE_RETRY_BACKOFF_SECONDS,
             cache_ttl_seconds=settings.INTELLIGENCE_CACHE_TTL_SECONDS,
-            extra={"api_id": getattr(settings, "CENSYS_API_ID", None)} if provider_key == "censys" else {},
+            extra=(
+                {"organization_id": settings.CENSYS_ORGANIZATION_ID}
+                if provider_key == "censys"
+                else {
+                    "plan": settings.SHODAN_PLAN,
+                    "host_lookup_enabled": settings.SHODAN_ENABLE_HOST_LOOKUP,
+                    "search_enabled": settings.SHODAN_ENABLE_SEARCH,
+                    "on_demand_scan_enabled": settings.SHODAN_ENABLE_ON_DEMAND_SCAN,
+                    "streaming_enabled": settings.SHODAN_ENABLE_STREAMING,
+                    "bulk_data_enabled": settings.SHODAN_ENABLE_BULK_DATA,
+                }
+                if provider_key == "shodan"
+                else {"builtwith_cache_ttl_seconds": settings.BUILTWITH_CACHE_TTL_SECONDS}
+                if provider_key == "builtwith"
+                else {"allow_file_upload": settings.VIRUSTOTAL_ALLOW_FILE_UPLOAD}
+                if provider_key == "virustotal"
+                else {}
+            ),
         )
 
     def _provider_env(self, provider_key: str) -> tuple[bool | None, str | None, str | None]:
@@ -77,7 +94,7 @@ class IntegrationManager:
             "ssllabs": (True, None, settings.SSL_LABS_API_URL),
             "circl": (True, None, settings.CVE_CIRCL_API_URL),
             "shodan": (settings.SHODAN_ENABLED, settings.SHODAN_API_KEY, getattr(settings, "SHODAN_API_URL", "https://api.shodan.io")),
-            "censys": (getattr(settings, "CENSYS_ENABLED", False), getattr(settings, "CENSYS_API_SECRET", None), getattr(settings, "CENSYS_API_URL", "https://search.censys.io/api/v2")),
+            "censys": (settings.CENSYS_ENABLED, settings.CENSYS_PAT, settings.CENSYS_API_BASE_URL),
             "securitytrails": (getattr(settings, "SECURITYTRAILS_ENABLED", False), getattr(settings, "SECURITYTRAILS_API_KEY", None), getattr(settings, "SECURITYTRAILS_API_URL", "https://api.securitytrails.com/v1")),
             "virustotal": (settings.VIRUSTOTAL_ENABLED, settings.VIRUSTOTAL_API_KEY, getattr(settings, "VIRUSTOTAL_API_URL", "https://www.virustotal.com/api/v3")),
             "abuseipdb": (getattr(settings, "ABUSEIPDB_ENABLED", False), getattr(settings, "ABUSEIPDB_API_KEY", None), getattr(settings, "ABUSEIPDB_API_URL", "https://api.abuseipdb.com/api/v2")),
@@ -91,6 +108,15 @@ class IntegrationManager:
             "cloudflare": (getattr(settings, "CLOUDFLARE_ENABLED", False), getattr(settings, "CLOUDFLARE_API_KEY", None), getattr(settings, "CLOUDFLARE_API_URL", None)),
         }
         return mapping.get(provider_key, (None, None, None))
+
+    def _timeout_for(self, provider_key: str) -> int | float:
+        if provider_key == "censys":
+            return settings.CENSYS_TIMEOUT_SECONDS
+        if provider_key == "shodan":
+            return settings.SHODAN_TIMEOUT_SECONDS
+        if provider_key == "virustotal":
+            return settings.VIRUSTOTAL_TIMEOUT_SECONDS
+        return settings.INTELLIGENCE_REQUEST_TIMEOUT_SECONDS
 
     @property
     def providers(self) -> list[ProviderAdapter]:
