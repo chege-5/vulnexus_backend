@@ -30,7 +30,8 @@ from app.services.oauth import (
     disconnect_github_connection,
     list_github_branches,
 )
-from app.services.email import send_password_reset_email
+from app.services.email import send_email_verification, send_password_reset_email
+from app.services.mfa import consume_recovery_code, generate_recovery_codes, generate_totp_secret, provisioning_uri, verify_totp
 from app.services.rbac import Permission, log_audit_event, require_permission
 from app.utils.logger import get_logger
 
@@ -96,6 +97,35 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 
+class VerifyEmailRequest(BaseModel):
+    token: str
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+class MFAEnableRequest(BaseModel):
+    code: str
+
+
+class MFALoginVerifyRequest(BaseModel):
+    challenge_token: str
+    code: Optional[str] = None
+    recovery_code: Optional[str] = None
+
+
+class MFADisableRequest(BaseModel):
+    password: str
+    code: Optional[str] = None
+    recovery_code: Optional[str] = None
+
+
+class MFARegenerateRecoveryRequest(BaseModel):
+    password: str
+    code: str
+
+
 class SubscribeRequest(BaseModel):
     plan: Optional[str] = None
     tier: Optional[str] = None
@@ -144,6 +174,8 @@ class UserSessionInfo(BaseModel):
     is_approved: bool
     avatar_url: Optional[str] = None
     auth_provider: str = "email"
+    email_verified: bool = False
+    mfa_enabled: bool = False
 
 
 class TokenResponse(BaseModel):
@@ -151,6 +183,13 @@ class TokenResponse(BaseModel):
     refresh_token: Optional[str] = None
     token_type: str = "bearer"
     user: UserSessionInfo
+
+
+class MFAChallengeResponse(BaseModel):
+    mfa_required: bool = True
+    challenge_token: str
+    expires_in_seconds: int
+    delivery: str = "totp"
 
 
 def _session_info(user: User) -> UserSessionInfo:
@@ -171,6 +210,8 @@ def _session_info(user: User) -> UserSessionInfo:
         is_approved=user.is_approved,
         avatar_url=user.avatar_url,
         auth_provider=user.auth_provider,
+        email_verified=bool(user.email_verified),
+        mfa_enabled=bool(user.mfa_enabled),
     )
 
 
@@ -234,6 +275,41 @@ def _store_refresh(user: User) -> str:
     refresh = create_refresh_token({"sub": str(user.id)})
     user.refresh_token = hash_token(refresh)
     return refresh
+
+
+def _issue_session(user: User, response: Response) -> TokenResponse:
+    token = create_access_token({"sub": str(user.id), "role": user.role})
+    refresh = _store_refresh(user)
+    _set_refresh_cookie(response, refresh)
+    return TokenResponse(access_token=token, user=_session_info(user))
+
+
+def _create_mfa_challenge(user: User) -> MFAChallengeResponse:
+    challenge = secrets.token_urlsafe(32)
+    user.mfa_challenge_token_hash = hash_token(challenge)
+    user.mfa_challenge_expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.MFA_CHALLENGE_EXPIRE_MINUTES)
+    return MFAChallengeResponse(
+        challenge_token=challenge,
+        expires_in_seconds=settings.MFA_CHALLENGE_EXPIRE_MINUTES * 60,
+    )
+
+
+def _verification_required(user: User) -> bool:
+    return settings.REQUIRE_EMAIL_VERIFICATION and user.auth_provider == "email" and not user.email_verified
+
+
+async def _send_verification_for_user(user: User, db) -> str:
+    token = secrets.token_urlsafe(32)
+    user.email_verification_token_hash = hash_token(token)
+    user.email_verification_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    await db.commit()
+    try:
+        await send_email_verification(user.email, token)
+    except Exception:
+        logger.exception("Email verification delivery failed")
+        if settings.IS_PRODUCTION:
+            raise
+    return token
 
 
 def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
@@ -312,6 +388,7 @@ async def register(body: RegisterRequest, response: Response, db=Depends(get_db)
         scan_limit=limit,
         is_approved=True,
         pending_approval=False,
+        email_verified=not settings.REQUIRE_EMAIL_VERIFICATION,
     )
 
     db.add(user)
@@ -322,14 +399,14 @@ async def register(body: RegisterRequest, response: Response, db=Depends(get_db)
         await db.rollback()
         raise HTTPException(status_code=409, detail="Email already registered")
 
-    token = create_access_token({"sub": str(user.id), "role": user.role})
-    refresh = _store_refresh(user)
+    if not user.email_verified:
+        await _send_verification_for_user(user, db)
+    session = _issue_session(user, response)
     await db.commit()
-    _set_refresh_cookie(response, refresh)
-    return TokenResponse(access_token=token, user=_session_info(user))
+    return session
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login")
 async def login(body: LoginRequest, response: Response, db=Depends(get_db)):
     result = await db.execute(select(User).where(User.email == body.email.lower()))
     user = result.scalar_one_or_none()
@@ -337,13 +414,17 @@ async def login(body: LoginRequest, response: Response, db=Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_approved or user.pending_approval:
         raise HTTPException(status_code=403, detail="Account is pending approval")
+    if _verification_required(user):
+        raise HTTPException(status_code=403, detail="Email verification is required before login")
+    if user.mfa_enabled:
+        challenge = _create_mfa_challenge(user)
+        await db.commit()
+        return challenge
 
-    token = create_access_token({"sub": str(user.id), "role": user.role})
-    refresh = _store_refresh(user)
     user.last_login = datetime.now(timezone.utc)
+    session = _issue_session(user, response)
     await db.commit()
-    _set_refresh_cookie(response, refresh)
-    return TokenResponse(access_token=token, user=_session_info(user))
+    return session
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -482,7 +563,8 @@ async def subscribe_plan(
     
     
 @router.get("/google/start", response_model=OAuthStartResponse)
-async def google_start(flow: str = "login", redirect_uri: Optional[str] = None):
+@limiter.limit("20/hour")
+async def google_start(request: Request, flow: str = "login", redirect_uri: Optional[str] = None):
     _require_oauth_config("google")
     safe_redirect_uri = _allowed_oauth_redirect_uri("google", redirect_uri)
     state = _sign_oauth_state("google", flow, secrets.token_urlsafe(16))
@@ -491,7 +573,8 @@ async def google_start(flow: str = "login", redirect_uri: Optional[str] = None):
 
 
 @router.get("/github/start", response_model=OAuthStartResponse)
-async def github_start(flow: str = "login", redirect_uri: Optional[str] = None):
+@limiter.limit("20/hour")
+async def github_start(request: Request, flow: str = "login", redirect_uri: Optional[str] = None):
     _require_oauth_config("github")
     safe_redirect_uri = _allowed_oauth_redirect_uri("github", redirect_uri)
     state = _sign_oauth_state("github", flow, secrets.token_urlsafe(16))
@@ -499,7 +582,8 @@ async def github_start(flow: str = "login", redirect_uri: Optional[str] = None):
 
 
 @router.post("/google/exchange", response_model=TokenResponse)
-async def google_exchange(body: OAuthRequest, response: Response, db=Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
+@limiter.limit("20/hour")
+async def google_exchange(body: OAuthRequest, request: Request, response: Response, db=Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
     _require_oauth_config("google")
     if not body.code:
         logger.warning("Google OAuth exchange rejected: missing authorization code")
@@ -529,7 +613,8 @@ async def google_exchange(body: OAuthRequest, response: Response, db=Depends(get
 
 
 @router.post("/github/exchange", response_model=TokenResponse)
-async def github_exchange(body: OAuthRequest, response: Response, db=Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
+@limiter.limit("20/hour")
+async def github_exchange(body: OAuthRequest, request: Request, response: Response, db=Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
     _require_oauth_config("github")
     if not body.code:
         raise HTTPException(status_code=400, detail="GitHub OAuth code is required")
@@ -634,6 +719,159 @@ async def reset_password(body: ResetPasswordRequest, db=Depends(get_db)):
     user.refresh_token = None
     await db.commit()
     return {"message": "Password reset successfully"}
+
+
+@router.post("/verify-email")
+@limiter.limit("10/hour")
+async def verify_email(request: Request, body: VerifyEmailRequest, db=Depends(get_db)):
+    token_hash = hash_token(body.token)
+    result = await db.execute(select(User).where(User.email_verification_token_hash == token_hash))
+    user = result.scalar_one_or_none()
+    expires_at = _as_aware_utc(user.email_verification_expires_at if user else None)
+    if not user or not expires_at or expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+    user.email_verified = True
+    user.email_verification_token_hash = None
+    user.email_verification_expires_at = None
+    await db.commit()
+    return {"message": "Email verified successfully"}
+
+
+@router.post("/resend-verification")
+@limiter.limit("5/hour")
+async def resend_verification(request: Request, body: ResendVerificationRequest, db=Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == body.email.lower()))
+    user = result.scalar_one_or_none()
+    if user and not user.email_verified:
+        await _send_verification_for_user(user, db)
+    return {"message": "If verification is required, a verification email has been sent."}
+
+
+@router.get("/mfa/status")
+async def mfa_status(current_user: User = Depends(get_current_user)):
+    return {
+        "enabled": bool(current_user.mfa_enabled),
+        "recovery_codes_remaining": len(current_user.mfa_recovery_codes or []),
+    }
+
+
+@router.post("/mfa/setup")
+@limiter.limit("5/hour")
+async def mfa_setup(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is already enabled")
+    secret = generate_totp_secret()
+    user.mfa_secret = secret
+    await db.commit()
+    return {
+        "secret": secret,
+        "manual_key": secret,
+        "otpauth_url": provisioning_uri(secret=secret, account_name=user.email),
+        "issuer": settings.MFA_ISSUER,
+    }
+
+
+@router.post("/mfa/enable")
+@limiter.limit("10/hour")
+async def mfa_enable(
+    body: MFAEnableRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user = result.scalar_one_or_none()
+    if not user or not user.mfa_secret:
+        raise HTTPException(status_code=400, detail="Start MFA setup first")
+    if not verify_totp(user.mfa_secret, body.code):
+        raise HTTPException(status_code=400, detail="Invalid MFA code")
+    recovery_codes, recovery_hashes = generate_recovery_codes()
+    user.mfa_enabled = True
+    user.mfa_recovery_codes = recovery_hashes
+    await db.commit()
+    return {"message": "MFA enabled", "recovery_codes": recovery_codes}
+
+
+@router.post("/mfa/verify-login", response_model=TokenResponse)
+@limiter.limit("20/hour")
+async def mfa_verify_login(body: MFALoginVerifyRequest, request: Request, response: Response, db=Depends(get_db)):
+    challenge_hash = hash_token(body.challenge_token)
+    result = await db.execute(select(User).where(User.mfa_challenge_token_hash == challenge_hash))
+    user = result.scalar_one_or_none()
+    expires_at = _as_aware_utc(user.mfa_challenge_expires_at if user else None)
+    if not user or not expires_at or expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Invalid or expired MFA challenge")
+
+    verified = verify_totp(user.mfa_secret, body.code or "")
+    if not verified and body.recovery_code:
+        verified, remaining = consume_recovery_code(user.mfa_recovery_codes, body.recovery_code)
+        if verified:
+            user.mfa_recovery_codes = remaining
+    if not verified:
+        raise HTTPException(status_code=401, detail="Invalid MFA code")
+
+    user.mfa_challenge_token_hash = None
+    user.mfa_challenge_expires_at = None
+    user.last_login = datetime.now(timezone.utc)
+    session = _issue_session(user, response)
+    await db.commit()
+    return session
+
+
+@router.post("/mfa/disable")
+@limiter.limit("10/hour")
+async def mfa_disable(
+    body: MFADisableRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user = result.scalar_one_or_none()
+    if not user or not user.password_hash or not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid password")
+    verified = verify_totp(user.mfa_secret, body.code or "")
+    if not verified and body.recovery_code:
+        verified, remaining = consume_recovery_code(user.mfa_recovery_codes, body.recovery_code)
+        if verified:
+            user.mfa_recovery_codes = remaining
+    if not verified:
+        raise HTTPException(status_code=401, detail="Invalid MFA code")
+    user.mfa_enabled = False
+    user.mfa_secret = None
+    user.mfa_recovery_codes = []
+    await db.commit()
+    return {"message": "MFA disabled"}
+
+
+@router.post("/mfa/recovery-codes/regenerate")
+@limiter.limit("5/hour")
+async def mfa_regenerate_recovery_codes(
+    body: MFARegenerateRecoveryRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user = result.scalar_one_or_none()
+    if not user or not user.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is not enabled")
+    if not user.password_hash or not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid password")
+    if not verify_totp(user.mfa_secret, body.code):
+        raise HTTPException(status_code=401, detail="Invalid MFA code")
+    recovery_codes, recovery_hashes = generate_recovery_codes()
+    user.mfa_recovery_codes = recovery_hashes
+    await db.commit()
+    return {"recovery_codes": recovery_codes}
 
 
 @router.get("/me", response_model=UserSessionInfo)

@@ -26,6 +26,15 @@ async def _get_redis():
     return _redis_client
 
 
+async def close_redis_cache() -> None:
+    """Close loop-bound Redis resources when a Celery task loop ends."""
+    global _redis_client, _redis_checked
+    client, _redis_client = _redis_client, None
+    _redis_checked = False
+    if client is not None:
+        await client.aclose()
+
+
 class RedisCache:
     def __init__(self, ttl: int = 3600):
         self._ttl = ttl

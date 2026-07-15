@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
 class ScanUploadResponse(BaseModel):
@@ -46,6 +46,18 @@ class ReportListItem(BaseModel):
     date: Optional[str] = None
     status: str
     format: str = "PDF"
+
+
+class ReportAIQuestionRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("question")
+    @classmethod
+    def question_must_contain_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("question must contain text")
+        return value
 
 
 class VulnerabilityListItem(BaseModel):
@@ -95,6 +107,7 @@ class VulnerabilityDetailOut(BaseModel):
     mitre_technique: Optional[str] = None
     cwe_ids: list[str] = Field(default_factory=list)
     known_exploit: bool = False
+    ai_explanation: Optional[dict] = None
     comments: list[dict] = Field(default_factory=list)
     history: list[dict] = Field(default_factory=list)
 
@@ -142,6 +155,7 @@ class ScanResultResponse(BaseModel):
     type: str
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
+    metadata: dict = Field(default_factory=dict)
 
 
 class DashboardResponse(BaseModel):

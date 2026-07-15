@@ -79,6 +79,13 @@ class Settings:
         self.REDIS_URL = _get_str("REDIS_URL", "redis://localhost:6379/0")
         self.CELERY_BROKER_URL = _get_str("CELERY_BROKER_URL", self.REDIS_URL)
         self.CELERY_RESULT_BACKEND = _get_str("CELERY_RESULT_BACKEND", self.REDIS_URL)
+        self.CELERY_WORKER_PREFETCH_MULTIPLIER = _get_int("CELERY_WORKER_PREFETCH_MULTIPLIER", 1)
+        self.CELERY_TASK_SOFT_TIME_LIMIT = _get_int("CELERY_TASK_SOFT_TIME_LIMIT", 180)
+        self.CELERY_TASK_TIME_LIMIT = max(
+            self.CELERY_TASK_SOFT_TIME_LIMIT + 1,
+            _get_int("CELERY_TASK_TIME_LIMIT", 210),
+        )
+        self.VULNEXUS_CELERY_WORKER = _get_bool("VULNEXUS_CELERY_WORKER", False)
         self.SECRET_KEY = _get_optional_str("SECRET_KEY")
         self.ALGORITHM = _get_str("ALGORITHM", "HS256")
 
@@ -93,6 +100,11 @@ class Settings:
         self.MAX_ZIP_RATIO = _get_int("MAX_ZIP_RATIO", 100)
         self.VERIFY_SCAN_TARGETS = _get_bool("VERIFY_SCAN_TARGETS", True)
         self.SCAN_TIMEOUT = _get_int("SCAN_TIMEOUT", 60)
+        self.DNS_RESOLUTION_TIMEOUT_SECONDS = _get_float("DNS_RESOLUTION_TIMEOUT_SECONDS", 5.0)
+        self.ENABLE_LIVE_INTELLIGENCE = _get_bool("ENABLE_LIVE_INTELLIGENCE", True)
+        self.ENABLE_AI_ENRICHMENT = _get_bool("ENABLE_AI_ENRICHMENT", True)
+        self.ENABLE_AI_DURING_SCAN = _get_bool("ENABLE_AI_DURING_SCAN", False)
+        self.ENABLE_REPORT_GENERATION_DURING_SCAN = _get_bool("ENABLE_REPORT_GENERATION_DURING_SCAN", True)
         self.TLS_CONNECT_TIMEOUT_SECONDS = _get_float("TLS_CONNECT_TIMEOUT_SECONDS", 6.0)
         self.TLS_NEAR_EXPIRY_DAYS = _get_int("TLS_NEAR_EXPIRY_DAYS", 30)
         self.TLS_MIN_VERSION = _get_str("TLS_MIN_VERSION", "TLSv1.2")
@@ -139,18 +151,30 @@ class Settings:
         self.GITHUB_ADVISORY_API_URL = _get_str("GITHUB_ADVISORY_API_URL", "https://api.github.com/advisories")
 
         self.SHODAN_API_KEY = _get_optional_str("SHODAN_API_KEY")
-        self.SHODAN_ENABLED = _get_bool("SHODAN_ENABLED", False)
+        self.SHODAN_ENABLED = _get_bool("ENABLE_SHODAN", _get_bool("SHODAN_ENABLED", False))
         self.SHODAN_API_URL = _get_str("SHODAN_API_URL", "https://api.shodan.io")
-        self.CENSYS_API_ID = _get_optional_str("CENSYS_API_ID")
-        self.CENSYS_API_SECRET = _get_optional_str("CENSYS_API_SECRET")
-        self.CENSYS_API_URL = _get_str("CENSYS_API_URL", "https://search.censys.io/api/v2")
-        self.CENSYS_ENABLED = _get_bool("CENSYS_ENABLED", False)
+        self.SHODAN_PLAN = _get_str("SHODAN_PLAN", "free").strip().lower()
+        self.SHODAN_TIMEOUT_SECONDS = _get_int("SHODAN_TIMEOUT_SECONDS", 10)
+        self.SHODAN_ENABLE_HOST_LOOKUP = _get_bool("SHODAN_ENABLE_HOST_LOOKUP", True)
+        # These controls are deliberately default-deny. The VulNexus adapter does
+        # not implement Enterprise-only Shodan APIs or on-demand scanning.
+        self.SHODAN_ENABLE_SEARCH = _get_bool("SHODAN_ENABLE_SEARCH", False)
+        self.SHODAN_ENABLE_ON_DEMAND_SCAN = _get_bool("SHODAN_ENABLE_ON_DEMAND_SCAN", False)
+        self.SHODAN_ENABLE_STREAMING = _get_bool("SHODAN_ENABLE_STREAMING", False)
+        self.SHODAN_ENABLE_BULK_DATA = _get_bool("SHODAN_ENABLE_BULK_DATA", False)
+        self.CENSYS_ENABLED = _get_bool("ENABLE_CENSYS", _get_bool("CENSYS_ENABLED", False))
+        self.CENSYS_API_BASE_URL = _get_str("CENSYS_API_BASE_URL", "https://api.platform.censys.io/v3/global")
+        self.CENSYS_PAT = _get_optional_str("CENSYS_PAT")
+        self.CENSYS_ORGANIZATION_ID = _get_optional_str("CENSYS_ORGANIZATION_ID")
+        self.CENSYS_TIMEOUT_SECONDS = _get_int("CENSYS_TIMEOUT_SECONDS", 15)
         self.SECURITYTRAILS_API_KEY = _get_optional_str("SECURITYTRAILS_API_KEY")
         self.SECURITYTRAILS_API_URL = _get_str("SECURITYTRAILS_API_URL", "https://api.securitytrails.com/v1")
         self.SECURITYTRAILS_ENABLED = _get_bool("SECURITYTRAILS_ENABLED", False)
         self.VIRUSTOTAL_API_KEY = _get_optional_str("VIRUSTOTAL_API_KEY")
-        self.VIRUSTOTAL_ENABLED = _get_bool("VIRUSTOTAL_ENABLED", False)
-        self.VIRUSTOTAL_API_URL = _get_str("VIRUSTOTAL_API_URL", "https://www.virustotal.com/api/v3")
+        self.VIRUSTOTAL_ENABLED = _get_bool("ENABLE_VIRUSTOTAL", _get_bool("VIRUSTOTAL_ENABLED", False))
+        self.VIRUSTOTAL_API_URL = _get_first_str(("VIRUSTOTAL_BASE_URL", "VIRUSTOTAL_API_URL"), "https://www.virustotal.com/api/v3")
+        self.VIRUSTOTAL_TIMEOUT_SECONDS = _get_int("VIRUSTOTAL_TIMEOUT_SECONDS", 15)
+        self.VIRUSTOTAL_ALLOW_FILE_UPLOAD = _get_bool("VIRUSTOTAL_ALLOW_FILE_UPLOAD", False)
         self.ABUSEIPDB_API_KEY = _get_optional_str("ABUSEIPDB_API_KEY")
         self.ABUSEIPDB_API_URL = _get_str("ABUSEIPDB_API_URL", "https://api.abuseipdb.com/api/v2")
         self.ABUSEIPDB_ENABLED = _get_bool("ABUSEIPDB_ENABLED", False)
@@ -163,6 +187,7 @@ class Settings:
         self.BUILTWITH_API_KEY = _get_optional_str("BUILTWITH_API_KEY")
         self.BUILTWITH_API_URL = _get_str("BUILTWITH_API_URL", "https://api.builtwith.com")
         self.BUILTWITH_ENABLED = _get_bool("BUILTWITH_ENABLED", False)
+        self.BUILTWITH_CACHE_TTL_SECONDS = _get_int("BUILTWITH_CACHE_TTL_SECONDS", 86400)
         self.WAPPALYZER_API_KEY = _get_optional_str("WAPPALYZER_API_KEY")
         self.WAPPALYZER_API_URL = _get_str("WAPPALYZER_API_URL", "https://api.wappalyzer.com")
         self.WAPPALYZER_ENABLED = _get_bool("WAPPALYZER_ENABLED", False)
@@ -187,6 +212,14 @@ class Settings:
         self.OPENAI_MAX_TOKENS = _get_int("OPENAI_MAX_TOKENS", 450)
         self.OPENAI_TEMPERATURE = _get_float("OPENAI_TEMPERATURE", 0.2)
         self.LLM_RATE_LIMIT = _get_str("LLM_RATE_LIMIT", "30/minute")
+        self.AI_PRIMARY_PROVIDER = _get_str("AI_PRIMARY_PROVIDER", "nvidia")
+        self.NVIDIA_API_KEY = _get_optional_str("NVIDIA_API_KEY")
+        self.NVIDIA_MODEL = _get_str("NVIDIA_MODEL", "gemma-2-27b-it")
+        self.NVIDIA_TIMEOUT_SECONDS = _get_float("NVIDIA_TIMEOUT_SECONDS", 25.0)
+        self.AI_FALLBACK_PROVIDER = _get_str("AI_FALLBACK_PROVIDER", "openrouter")
+        self.OPENROUTER_API_KEY = _get_optional_str("OPENROUTER_API_KEY")
+        self.OPENROUTER_MODEL = _get_str("OPENROUTER_MODEL", "openai/gpt-oss-120b")
+        self.OPENROUTER_TIMEOUT_SECONDS = _get_float("OPENROUTER_TIMEOUT_SECONDS", 35.0)
 
         self.REPORT_RENDERER = _get_str("REPORT_RENDERER", "playwright")
         self.PLAYWRIGHT_BROWSER_PATH = _get_optional_str("PLAYWRIGHT_BROWSER_PATH")
@@ -219,6 +252,7 @@ class Settings:
         self.GITHUB_CLIENT_ID = _get_optional_str("GITHUB_CLIENT_ID")
         self.GITHUB_CLIENT_SECRET = _get_optional_str("GITHUB_CLIENT_SECRET")
         self.GITHUB_REDIRECT_URI = _get_str("GITHUB_REDIRECT_URI", "http://localhost:5173/auth/github/callback")
+        self.GITHUB_OAUTH_SCOPE = _get_str("GITHUB_OAUTH_SCOPE", "read:user user:email repo")
 
         self.CSRF_SECRET = _get_optional_str("CSRF_SECRET")
         self.ENCRYPTION_KEY = _get_optional_str("ENCRYPTION_KEY")
@@ -233,6 +267,10 @@ class Settings:
         self.SMTP_PASSWORD = _get_optional_str("SMTP_PASSWORD")
         self.SMTP_FROM_EMAIL = _get_optional_str("SMTP_FROM_EMAIL")
         self.PASSWORD_RESET_URL = _get_optional_str("PASSWORD_RESET_URL")
+        self.EMAIL_VERIFICATION_URL = _get_optional_str("EMAIL_VERIFICATION_URL")
+        self.REQUIRE_EMAIL_VERIFICATION = _get_bool("REQUIRE_EMAIL_VERIFICATION", self.IS_PRODUCTION)
+        self.MFA_ISSUER = _get_str("MFA_ISSUER", "VulNexus")
+        self.MFA_CHALLENGE_EXPIRE_MINUTES = _get_int("MFA_CHALLENGE_EXPIRE_MINUTES", 5)
 
         if self.IS_PRODUCTION:
             if not self.SECRET_KEY or len(self.SECRET_KEY) < 32 or self.SECRET_KEY.startswith(("dev-", "change-me")):
@@ -241,8 +279,8 @@ class Settings:
                 raise RuntimeError("CSRF_SECRET must be a unique, high-entropy value of at least 32 characters in production")
             if not self.METRICS_TOKEN or len(self.METRICS_TOKEN) < 32:
                 raise RuntimeError("METRICS_TOKEN must be configured in production")
-            if not self.SMTP_HOST or not self.SMTP_FROM_EMAIL or not self.PASSWORD_RESET_URL:
-                raise RuntimeError("SMTP_HOST, SMTP_FROM_EMAIL, and PASSWORD_RESET_URL must be configured in production")
+            if not self.SMTP_HOST or not self.SMTP_FROM_EMAIL or not self.PASSWORD_RESET_URL or not self.EMAIL_VERIFICATION_URL:
+                raise RuntimeError("SMTP_HOST, SMTP_FROM_EMAIL, PASSWORD_RESET_URL, and EMAIL_VERIFICATION_URL must be configured in production")
             if any("localhost" in origin or "127.0.0.1" in origin for origin in self.CORS_ORIGINS.split(",")):
                 raise RuntimeError("CORS_ORIGINS must not contain local development origins in production")
 

@@ -89,6 +89,13 @@ class IntegrationCache:
             if key.startswith(prefix):
                 self._fallback.pop(key, None)
 
+    async def close(self) -> None:
+        """Release Redis connections before the Celery task event loop closes."""
+        client, self._redis = self._redis, None
+        self._checked = False
+        if client is not None:
+            await client.aclose()
+
     def _normalize(self, value: Any) -> str:
         if isinstance(value, str):
             return value.strip().lower().replace(" ", "-")

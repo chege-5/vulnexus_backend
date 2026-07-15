@@ -11,6 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.deps import get_db
 from app import database
 from app.auth import get_current_user, get_user_from_token
+from app.config import settings
+from app.services.targets import InvalidTargetError, normalize_target
+from app.services.ai.explanations import AIExplanationUnavailable, ai_explanation_service
 from app.rate_limit import limiter
 from app.models.db_models import Scan, ScanFile, ScanStatus, ScanType, Vulnerability, User
 from app.models.db_models import GitHubConnection
@@ -115,25 +118,13 @@ async def _count_active_scans(db: AsyncSession, user_id: uuid.UUID) -> int:
     return result.scalar_one()
 
 
-def _assert_allowed_scan_target(target_url: str) -> None:
-    parsed = urlparse(target_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise HTTPException(status_code=400, detail="Only http and https URLs with a hostname can be scanned")
-    hostname = parsed.hostname.lower()
-    if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
-        raise HTTPException(status_code=400, detail="Localhost and local network targets are not allowed")
+async def _assert_allowed_scan_target(target_url: str):
     try:
-        infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror:
-        raise HTTPException(status_code=400, detail="Unable to resolve scan target")
-    for info in infos:
-        address = info[4][0]
-        try:
-            ip = ipaddress.ip_address(address)
-        except ValueError:
-            continue
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
-            raise HTTPException(status_code=400, detail="Private, loopback, or reserved network targets are not allowed")
+        return await normalize_target(target_url)
+    except InvalidTargetError as exc:
+        if "could not be resolved" in str(exc):
+            raise HTTPException(status_code=400, detail="Unable to resolve scan target") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/upload-file", response_model=ScanUploadResponse)
@@ -189,7 +180,7 @@ async def scan_url_target(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission(Permission.SCAN_CREATE)),
 ):
-    _assert_allowed_scan_target(str(payload.url))
+    normalized_target = await _assert_allowed_scan_target(str(payload.url))
     if not current_user.is_approved:
         raise HTTPException(status_code=403, detail="Your account is not approved by admin. Please contact support.")
 
@@ -202,7 +193,7 @@ async def scan_url_target(
 
     scan = Scan(
         type=ScanType.URL.value,
-        target=str(payload.url),
+        target=normalized_target.normalized_url,
         status=ScanStatus.QUEUED.value,
         user_id=current_user.id,
         project_id=payload.project_id,
@@ -212,7 +203,7 @@ async def scan_url_target(
     await db.refresh(scan)
 
     from app.celery_app import run_url_scan_task
-    run_url_scan_task.delay(str(scan.id), str(payload.url))
+    run_url_scan_task.delay(str(scan.id), normalized_target.normalized_url)
 
     logger.info(f"Queued URL scan {scan.id} for target {payload.url}")
     return ScanUploadResponse(scan_id=scan.id, status="queued")
@@ -482,4 +473,39 @@ async def scan_result(
         type=scan.type,
         started_at=scan.started_at,
         finished_at=scan.finished_at,
+        metadata=scan.result_metadata or {},
     )
+
+
+@router.post("/scans/{scan_id}/ai-summary")
+@limiter.limit("10/minute")
+async def explain_scan_with_ai(
+    scan_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.AI_QUERY)),
+):
+    result = await db.execute(select(Scan).where(Scan.id == scan_id))
+    scan = result.scalar_one_or_none()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if scan.user_id != current_user.id and current_user.role not in {"admin", "super_admin"}:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if scan.status != ScanStatus.COMPLETED.value:
+        raise HTTPException(status_code=409, detail="AI explanation is available after scan completion")
+    findings_result = await db.execute(select(Vulnerability).where(Vulnerability.scan_id == scan.id).order_by(Vulnerability.created_at.asc()))
+    findings = findings_result.scalars().all()
+    payload = [
+        {
+            "rule_id": finding.rule_id,
+            "description": finding.description,
+            "severity": finding.severity,
+            "remediation": finding.remediation,
+            "cwe_ids": finding.cwe_ids or [],
+        }
+        for finding in findings
+    ]
+    try:
+        return await ai_explanation_service.explain_scan(target=scan.target, findings=payload, score=scan.overall_score)
+    except AIExplanationUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

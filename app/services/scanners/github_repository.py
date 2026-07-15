@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.config import settings
 from app.utils.logger import get_logger
 from app.services.github_repo_scanner import materialize_repository_source
 from app.services.models.pipeline import ScanContext, ScanTarget
@@ -55,7 +56,7 @@ class GitHubRepositoryScanner(TargetScanner):
                 )])
             access_token = await decrypt_token(connection.access_token)
 
-        scan_root = Path(context.options.get("scan_root") or Path("uploads") / str(context.scan_id) / "repository")
+        scan_root = Path(context.options.get("scan_root") or Path(settings.UPLOAD_DIR) / str(context.scan_id) / "repository")
         scan_root.mkdir(parents=True, exist_ok=True)
         try:
             source_files = await materialize_repository_source(access_token, owner, repository, branch, str(scan_root), folder)

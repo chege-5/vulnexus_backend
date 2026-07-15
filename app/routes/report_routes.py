@@ -1,3 +1,4 @@
+import asyncio
 import os
 import uuid
 
@@ -10,15 +11,81 @@ from app.deps import get_db
 from app.auth import get_current_user
 from app.rate_limit import limiter
 from app.models.db_models import Scan, ScanStatus, User, Vulnerability, CVEEntry, ComplianceCheck
-from app.models.pydantic_models import ReportListItem
+from app.models.pydantic_models import ReportAIQuestionRequest, ReportListItem
 from app.config import settings
 from app.services.report_generator import build_report, generate_html_report, build_report_payload, export_report_document, generate_pdf_report
 from app.services.rbac import Permission, require_permission
 from app.services.audit_engine import build_ai_insight, derive_final_audit_verdict
+from app.services.intelligence.llm_engine import llm_engine
 from app.utils.logger import get_logger
+from app.utils.redaction import redact_data
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+
+@router.post("/report/{scan_id}/ask-ai")
+@limiter.limit("10/minute")
+async def ask_report_ai(
+    scan_id: uuid.UUID,
+    payload: ReportAIQuestionRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.REPORT_READ)),
+):
+    """Answer a report follow-up without exposing raw scan evidence to the provider."""
+    result = await db.execute(select(Scan).where(Scan.id == scan_id))
+    scan = result.scalar_one_or_none()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if scan.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if scan.status != ScanStatus.COMPLETED.value:
+        raise HTTPException(status_code=409, detail="AI questions are available after scan completion")
+
+    vulnerabilities_result = await db.execute(select(Vulnerability).where(Vulnerability.scan_id == scan.id))
+    vulnerabilities = vulnerabilities_result.scalars().all()
+    findings = [
+        {
+            "rule_id": vulnerability.rule_id,
+            "description": vulnerability.description,
+            "severity": vulnerability.severity,
+            "cve_id": vulnerability.cve_id,
+            "cvss_score": vulnerability.cvss_score,
+            "remediation": vulnerability.remediation,
+            "cwe_ids": vulnerability.cwe_ids,
+            "owasp_category": vulnerability.owasp_category,
+            "known_exploit": vulnerability.known_exploit,
+        }
+        for vulnerability in vulnerabilities[:50]
+    ]
+    recommendations = [item["remediation"] for item in findings if item.get("remediation")][:10]
+    report_context = redact_data(
+        {
+            "title": f"Security report for {scan.target}",
+            "target": scan.target,
+            "scan_type": scan.type,
+            "risk": {"score": scan.overall_score or 0, "severity": _report_severity(scan.overall_score)},
+            "evidence": findings,
+            "recommendations": recommendations,
+        }
+    )
+    return await asyncio.to_thread(
+        llm_engine.answer_report_question,
+        question=payload.question.strip(),
+        report_context=report_context,
+    )
+
+
+def _report_severity(score: float | None) -> str:
+    value = score or 0
+    if value >= 80:
+        return "Critical"
+    if value >= 60:
+        return "High"
+    if value >= 30:
+        return "Medium"
+    return "Low"
 
 
 @router.get("/reports", response_model=list[ReportListItem])
@@ -147,6 +214,7 @@ async def download_report(
         verdict=final_audit,
         vulnerabilities=vuln_dicts,
     )
+    provider_statuses = ((scan.result_metadata or {}).get("reputation") or {}).get("provider_statuses") or []
 
     payload = build_report_payload(
         scan_id=scan.id,
@@ -158,6 +226,7 @@ async def download_report(
         compliance_checks=compliance_payload,
         audit_verdict=final_audit,
         ai_insight=ai_insight,
+        provider_statuses=provider_statuses,
         started_at=scan.started_at,
         finished_at=scan.finished_at,
     )
@@ -195,6 +264,7 @@ async def download_report(
                 compliance_checks=compliance_payload,
                 audit_verdict=final_audit,
                 ai_insight=ai_insight,
+                provider_statuses=provider_statuses,
                 started_at=str(scan.started_at) if scan.started_at else None,
                 finished_at=str(scan.finished_at) if scan.finished_at else None,
             )
@@ -223,6 +293,7 @@ async def download_report(
         compliance_checks=compliance_payload,
         audit_verdict=final_audit,
         ai_insight=ai_insight,
+        provider_statuses=provider_statuses,
         started_at=scan.started_at,
         finished_at=scan.finished_at,
     )
