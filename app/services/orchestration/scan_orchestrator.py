@@ -14,9 +14,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app import database
 from app.config import settings
-from app.models.db_models import CVEEntry, ComplianceCheck, Scan, ScanFile, ScanStatus, Severity, Vulnerability
+from app.models.db_models import AIReviewStatus, CVEEntry, ComplianceCheck, Scan, ScanFile, ScanStatus, Severity, Vulnerability
 from app.services.ai.risk_engine import AIRiskEngine
-from app.services.audit_engine import build_ai_insight, build_compliance_checks, derive_final_audit_verdict, infer_vulnerability_profile
+from app.services.ai.explanations import ai_explanation_service
+from app.services.audit_engine import build_compliance_checks, derive_final_audit_verdict, infer_vulnerability_profile
 from app.services.correlation.engine import CorrelationEngine
 from app.services.intelligence import knowledge_engine
 from app.services.models.pipeline import CorrelatedFinding, EnrichedFinding, RawFinding, ScanContext, ScanProgress, ScanTarget
@@ -141,13 +142,11 @@ class ScanOrchestrator:
             risk = self.ai_engine.evaluate(correlated)
 
             await self._raise_if_canceled(scan.id)
-            # AI explanations are opt-in post-scan work by default.  The
-            # deterministic scan is persisted and completed independently.
+            # The deterministic scan must finish independently. AI enrichment,
+            # remediation review, and enhanced reporting run only after this
+            # baseline has been committed and marked completed.
             await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, message="Saving findings", progress=88)
-            if settings.ENABLE_AI_DURING_SCAN and settings.ENABLE_AI_ENRICHMENT:
-                enriched = await asyncio.gather(*(knowledge_engine.enrich(item, risk=risk.model_dump()) for item in displayed))
-            else:
-                enriched = [EnrichedFinding(finding=item) for item in displayed]
+            enriched = [EnrichedFinding(finding=item) for item in displayed]
 
             try:
                 await self._persist_results(db, scan, context, enriched, risk)
@@ -173,9 +172,30 @@ class ScanOrchestrator:
                 )
                 raise ScanPersistenceError(message) from exc
 
+            # Retain the correlated context needed for the post-completion
+            # intelligence review without exposing it through the result API.
+            try:
+                metadata = dict(scan.result_metadata or {})
+                metadata["_ai_review_context"] = [item.model_dump(mode="json") for item in displayed]
+                scan.result_metadata = metadata
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                logger.exception("Unable to save AI review context scan_id=%s", scan.id)
+
             finished_at = datetime.now(timezone.utc)
-            await self._mark_scan(db, scan, status=ScanStatus.COMPLETED.value, progress=100, overall_score=risk.score, finished_at=finished_at)
+            await self._mark_scan(
+                db,
+                scan,
+                status=ScanStatus.COMPLETED.value,
+                ai_review_status=AIReviewStatus.PENDING.value,
+                ai_review_error=None,
+                progress=100,
+                overall_score=risk.score,
+                finished_at=finished_at,
+            )
             await self._store_progress(context, status=ScanStatus.COMPLETED.value, message="Scan completed", progress=100, finished_at=finished_at)
+            await self._queue_ai_review(db, scan)
 
             return {
                 "scan_id": str(scan.id),
@@ -299,7 +319,13 @@ class ScanOrchestrator:
             return ScannerResult(findings=[], metadata={"scanner": scanner_name, "error": str(exc), "failed": True})
 
     async def _persist_results(self, db, scan: Scan, context: ScanContext, findings: list[EnrichedFinding], risk) -> None:
-        scan.result_metadata = context.options.get("scan_result_metadata") or {}
+        # Queue-time target provenance is security-relevant and must survive
+        # completion.  Scanner metadata (for example provider statuses) is
+        # additive rather than a replacement for it.
+        scan.result_metadata = {
+            **(scan.result_metadata or {}),
+            **(context.options.get("scan_result_metadata") or {}),
+        }
         cve_entries: dict[str, CVEEntry] = {}
         known_exploit_count = 0
         vulnerability_payloads: list[dict[str, Any]] = []
@@ -394,15 +420,10 @@ class ScanOrchestrator:
             cve_count=sum(1 for item in vulnerability_payloads if item.get("cve_id")),
             known_exploit_count=known_exploit_count,
         )
-        ai_insight = build_ai_insight(
-            target=scan.target,
-            scan_type=scan.type,
-            overall_score=risk.score,
-            compliance_score=self._compliance_score(compliance_checks),
-            verdict=final_verdict,
-            vulnerabilities=vulnerability_payloads,
-        )
-        if settings.ENABLE_REPORT_GENERATION_DURING_SCAN:
+        # Build the baseline report now. It deliberately contains no provider
+        # generated explanation or AI remediation; those are added later by
+        # the dedicated AI review task.
+        try:
             await asyncio.to_thread(
                 build_report,
                 scan_id=scan.id,
@@ -413,11 +434,160 @@ class ScanOrchestrator:
                 cve_details=cve_details,
                 compliance_checks=compliance_checks,
                 audit_verdict=final_verdict,
-                ai_insight=ai_insight,
+                ai_insight=None,
                 provider_statuses=((scan.result_metadata or {}).get("reputation") or {}).get("provider_statuses") or [],
                 started_at=scan.started_at,
                 finished_at=datetime.now(timezone.utc),
             )
+        except Exception:
+            # Findings have already been committed. A document-rendering
+            # outage must not turn a completed security scan into a failure.
+            logger.exception("Baseline report generation failed scan_id=%s", scan.id)
+
+    async def _queue_ai_review(self, db, scan: Scan) -> None:
+        """Queue enrichment after completion without coupling it to scan status."""
+        try:
+            from app.celery_app import run_ai_review_task
+
+            run_ai_review_task.delay(str(scan.id))
+        except Exception as exc:
+            logger.exception("Unable to queue AI review scan_id=%s", scan.id)
+            try:
+                scan.ai_review_status = AIReviewStatus.FAILED.value
+                scan.ai_review_error = redact_text(str(exc))[:500] or "Unable to queue AI review"
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                logger.exception("Unable to persist AI review queue failure scan_id=%s", scan.id)
+
+    async def run_ai_review(self, scan_id: UUID) -> dict[str, Any]:
+        """Generate assisted remediation independently from the completed scan."""
+        async with database.async_session_maker() as db:
+            scan = await self._load_scan(db, scan_id)
+            if not scan:
+                raise ValueError(f"Scan {scan_id} not found")
+            if scan.status != ScanStatus.COMPLETED.value:
+                return {"scan_id": str(scan_id), "ai_review_status": scan.ai_review_status, "status": scan.status}
+            if scan.ai_review_status == AIReviewStatus.COMPLETED.value:
+                return {"scan_id": str(scan_id), "ai_review_status": AIReviewStatus.COMPLETED.value}
+
+            scan.ai_review_status = AIReviewStatus.PROCESSING.value
+            scan.ai_review_error = None
+            await db.commit()
+
+            try:
+                vulnerabilities_result = await db.execute(
+                    select(Vulnerability).where(Vulnerability.scan_id == scan.id).order_by(Vulnerability.created_at.asc())
+                )
+                vulnerabilities = vulnerabilities_result.scalars().all()
+                findings = [
+                    {
+                        "rule_id": item.rule_id,
+                        "description": item.description,
+                        "severity": item.severity,
+                        "remediation": item.remediation,
+                        "cwe_ids": item.cwe_ids or [],
+                    }
+                    for item in vulnerabilities
+                ]
+                review_context = (scan.result_metadata or {}).get("_ai_review_context") or []
+                if settings.ENABLE_AI_ENRICHMENT and review_context:
+                    enriched_findings = await asyncio.gather(
+                        *(knowledge_engine.enrich(CorrelatedFinding.model_validate(item), risk={"score": scan.overall_score or 0}) for item in review_context)
+                    )
+                    for vulnerability, enriched_finding in zip(vulnerabilities, enriched_findings):
+                        vulnerability.cve_id = enriched_finding.cve_id or vulnerability.cve_id
+                        vulnerability.cvss_score = enriched_finding.cvss_score if enriched_finding.cvss_score is not None else vulnerability.cvss_score
+                        vulnerability.known_exploit = bool(enriched_finding.kev or vulnerability.known_exploit)
+                        vulnerability.references = enriched_finding.references or vulnerability.references
+                        vulnerability.ai_explanation = enriched_finding.llm_context or vulnerability.ai_explanation
+                review = await ai_explanation_service.explain_scan(
+                    target=scan.target,
+                    findings=findings,
+                    score=scan.overall_score,
+                )
+
+                cve_ids = {item.cve_id for item in vulnerabilities if item.cve_id}
+                cve_details: list[dict[str, Any]] = []
+                if cve_ids:
+                    cve_result = await db.execute(select(CVEEntry).where(CVEEntry.cve_id.in_(cve_ids)))
+                    cve_details = [
+                        {
+                            "cve_id": entry.cve_id,
+                            "summary": entry.summary,
+                            "cvss_score": entry.cvss_score,
+                            "published_date": entry.published_date.isoformat() if entry.published_date else None,
+                            "references": entry.references or [],
+                        }
+                        for entry in cve_result.scalars().all()
+                    ]
+                compliance_result = await db.execute(select(ComplianceCheck).where(ComplianceCheck.scan_id == scan.id))
+                compliance_checks = [
+                    {"standard": item.standard, "category": item.category, "result": item.result, "score": item.score, "details": item.details or {}}
+                    for item in compliance_result.scalars().all()
+                ]
+                compliance_score = self._compliance_score(compliance_checks)
+                final_verdict = derive_final_audit_verdict(
+                    overall_score=scan.overall_score or 0,
+                    compliance_score=compliance_score,
+                    critical_findings=sum(1 for item in vulnerabilities if item.severity == Severity.CRITICAL.value),
+                    high_findings=sum(1 for item in vulnerabilities if item.severity == Severity.HIGH.value),
+                    cve_count=len(cve_ids),
+                    known_exploit_count=sum(1 for item in vulnerabilities if item.known_exploit),
+                )
+                report_findings = [
+                    {
+                        "rule_id": item.rule_id,
+                        "description": item.description,
+                        "severity": item.severity,
+                        "ml_score": item.ml_score,
+                        "cve_id": item.cve_id,
+                        "cvss_score": item.cvss_score,
+                        "file_path": item.file_path,
+                        "line_number": item.line_number,
+                        "remediation": item.remediation,
+                        "cwe_ids": item.cwe_ids,
+                        "owasp_category": item.owasp_category,
+                        "nist_control": item.nist_control,
+                        "mitre_technique": item.mitre_technique,
+                        "known_exploit": item.known_exploit,
+                        "references": item.references,
+                    }
+                    for item in vulnerabilities
+                ]
+                await asyncio.to_thread(
+                    build_report,
+                    scan_id=scan.id,
+                    target=scan.target,
+                    scan_type=scan.type,
+                    overall_score=scan.overall_score or 0,
+                    vulnerabilities=report_findings,
+                    cve_details=cve_details,
+                    compliance_checks=compliance_checks,
+                    audit_verdict=final_verdict,
+                    ai_insight=review,
+                    provider_statuses=((scan.result_metadata or {}).get("reputation") or {}).get("provider_statuses") or [],
+                    started_at=scan.started_at,
+                    finished_at=scan.finished_at,
+                )
+
+                metadata = dict(scan.result_metadata or {})
+                metadata["ai_review"] = review
+                metadata["enhanced_report"] = {"status": "ready"}
+                scan.result_metadata = metadata
+                scan.ai_review_status = AIReviewStatus.COMPLETED.value
+                scan.ai_review_error = None
+                await db.commit()
+                return {"scan_id": str(scan_id), "ai_review_status": AIReviewStatus.COMPLETED.value, "review": review}
+            except Exception as exc:
+                await db.rollback()
+                logger.exception("AI review failed scan_id=%s", scan_id)
+                failed_scan = await self._load_scan(db, scan_id)
+                if failed_scan:
+                    failed_scan.ai_review_status = AIReviewStatus.FAILED.value
+                    failed_scan.ai_review_error = redact_text(str(exc))[:500] or "AI review failed"
+                    await db.commit()
+                return {"scan_id": str(scan_id), "ai_review_status": AIReviewStatus.FAILED.value}
 
     def _validated_vulnerability_record(
         self,

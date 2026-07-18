@@ -266,7 +266,7 @@ footer {
     <table>
         <thead>
             <tr>
-                <th>#</th><th>Rule ID</th><th>Rule Name</th><th>Category</th><th>Severity</th><th>Confidence</th><th>Affected Asset</th><th>Line</th><th>Column</th><th>Matched Pattern</th><th>Evidence</th><th>Recommendation</th><th>CWE / OWASP</th>
+                <th>#</th><th>Rule ID</th><th>Rule Name</th><th>Category</th><th>Severity</th><th>Rule Default</th><th>Confidence</th><th>CVSS Hint</th><th>Contextual Risk</th><th>Review Status</th><th>Affected Asset</th><th>Line</th><th>Column</th><th>Matched Pattern</th><th>Evidence</th><th>Recommendation</th><th>CWE / OWASP</th>
             </tr>
         </thead>
         <tbody>
@@ -277,7 +277,11 @@ footer {
                 <td>{{ v.display_title }}</td>
                 <td>{{ v.display_category }}</td>
                 <td><span class="pill {{ v.severity|lower }}">{{ v.severity }}</span></td>
+                <td>{{ v.default_severity or v.severity }}</td>
                 <td>{{ v.display_confidence }}</td>
+                <td>{{ v.display_cvss_hint }}</td>
+                <td>{{ v.display_contextual_risk }}</td>
+                <td>{{ 'Requires review' if v.requires_review else 'Pattern matched' }}</td>
                 <td>{{ v.display_location }}</td>
                 <td>{{ v.line_number or 'Not Applicable' }}</td>
                 <td>{{ v.display_column }}</td>
@@ -617,6 +621,8 @@ def prepare_findings_for_report(vulnerabilities: list[dict]) -> list[dict]:
         item["display_category"] = _display_category(item)
         item["display_confidence"] = _format_confidence(item.get("confidence"))
         item["display_cvss"] = _format_cvss(item.get("cvss_score"))
+        item["display_cvss_hint"] = _format_cvss(item.get("cvss_hint"))
+        item["display_contextual_risk"] = item.get("risk_score") if item.get("risk_score") is not None else "Not calculated"
         item["display_cve"] = item.get("cve_id") or "Not Applicable"
         item["display_evidence"] = _format_evidence(item.get("evidence"))
         item["display_location"] = redact_text(item.get("file_path") or item.get("location") or item.get("target") or "Not Applicable")

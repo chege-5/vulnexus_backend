@@ -171,6 +171,26 @@ class HeaderScanner(TargetScanner):
                 headers=headers,
             ))
 
+        set_cookie = header_map.get("set-cookie")
+        if set_cookie:
+            cookie_flags = set_cookie.lower()
+            missing_flags = [
+                flag for flag in ("secure", "httponly", "samesite")
+                if flag not in cookie_flags
+            ]
+            if missing_flags:
+                findings.append(self._header_finding(
+                    rule_id="INSECURE_COOKIE_FLAGS",
+                    title="Response Cookie Missing Security Flags",
+                    description="A response Set-Cookie header is missing recommended security attributes.",
+                    severity="Medium",
+                    evidence={"header": "set-cookie", "missing_flags": missing_flags},
+                    remediation="Set Secure, HttpOnly, and an appropriate SameSite attribute on security-sensitive cookies.",
+                    url=url,
+                    status_code=status_code,
+                    headers=headers,
+                ))
+
         return findings
 
     def _header_finding(

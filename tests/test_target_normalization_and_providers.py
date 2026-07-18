@@ -28,6 +28,18 @@ async def test_target_normalization_preserves_http_url_and_maps_provider_inputs(
     assert target.normalized_url == "https://www.example.com:443/path/?a=1"
     assert target.hostname == "www.example.com"
     assert target.public_ips == ["104.20.23.154"]
+    assert target.original_input == "HTTPS://WWW.Example.COM:443/path/?a=1#fragment"
+    assert target.resolved_public_ips == ["104.20.23.154"]
+    assert target.final_redirect_url == target.normalized_url
+    assert target.as_metadata() == {
+        "original_input": "HTTPS://WWW.Example.COM:443/path/?a=1#fragment",
+        "normalized_url": "https://www.example.com:443/path/?a=1",
+        "hostname": "www.example.com",
+        "resolved_public_ips": ["104.20.23.154"],
+        "final_redirect_url": "https://www.example.com:443/path/?a=1",
+        "scanable_target_type": "url",
+        "redirects_followed": False,
+    }
     assert provider_domain(target) == "example.com"
 
 

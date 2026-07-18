@@ -36,6 +36,18 @@ celery_app = Celery(
 )
 
 celery_app.conf.update(
+    # The Windows worker is intentionally started with `-Q scans`. Route all
+    # scan lifecycle work there so producers never leave messages stranded on
+    # Celery's implicit `celery` queue.
+    task_default_queue="scans",
+    task_default_exchange="scans",
+    task_default_routing_key="scans",
+    task_routes={
+        "app.tasks.run_file_scan_task": {"queue": "scans"},
+        "app.tasks.run_url_scan_task": {"queue": "scans"},
+        "app.tasks.run_github_scan_task": {"queue": "scans"},
+        "app.tasks.run_ai_review_task": {"queue": "scans"},
+    },
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
@@ -79,6 +91,18 @@ def run_github_scan_task(scan_id_str: str, user_id_str: str, owner: str, reposit
             options={"owner": owner, "repository": repository, "branch": branch, "folder": folder},
         ),
     )
+
+
+@celery_app.task(name="app.tasks.run_ai_review_task")
+def run_ai_review_task(scan_id_str: str):
+    """Run slow assisted review after the primary scan is already complete."""
+    from app.services.orchestration.scan_orchestrator import scan_orchestrator
+
+    scan_id = UUID(scan_id_str)
+    logger.info("AI review task start scan_id=%s", scan_id)
+    result = _run_in_fresh_worker_loop(scan_orchestrator.run_ai_review(scan_id))
+    logger.info("AI review task complete scan_id=%s status=%s", scan_id, result.get("ai_review_status"))
+    return result
 
 
 def _run_scan_task(scan_id_str: str, runner) -> dict:

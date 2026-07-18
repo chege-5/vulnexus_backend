@@ -25,6 +25,33 @@ class NormalizedTarget:
     query: str
     resolved_ips: list[str]
     public_ips: list[str]
+    # URL scanners intentionally do not follow redirects: a public target can
+    # redirect a worker to a private address after admission.  The effective
+    # target is therefore the normalized URL that passed validation.
+    final_redirect_url: str | None = None
+    scanable_target_type: str = "url"
+
+    @property
+    def original_input(self) -> str:
+        """The submitted value, retained as provenance rather than scan input."""
+        return self.original
+
+    @property
+    def resolved_public_ips(self) -> list[str]:
+        """Public DNS answers safe to hand to IP-only providers."""
+        return self.public_ips
+
+    def as_metadata(self) -> dict[str, object]:
+        """Persist target provenance without changing the URL scan contract."""
+        return {
+            "original_input": self.original_input,
+            "normalized_url": self.normalized_url,
+            "hostname": self.hostname,
+            "resolved_public_ips": self.resolved_public_ips,
+            "final_redirect_url": self.final_redirect_url or self.normalized_url,
+            "scanable_target_type": self.scanable_target_type,
+            "redirects_followed": False,
+        }
 
 
 async def normalize_target(value: str, *, dns_timeout_seconds: float | None = None) -> NormalizedTarget:
@@ -71,6 +98,7 @@ async def normalize_target(value: str, *, dns_timeout_seconds: float | None = No
         query=parsed.query,
         resolved_ips=resolved_ips,
         public_ips=public_ips,
+        final_redirect_url=normalized_url,
     )
 
 

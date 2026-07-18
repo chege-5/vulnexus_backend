@@ -120,4 +120,15 @@ async def test_valid_public_url_queues_url_scan_task(monkeypatch):
     assert response.status == "queued"
     assert db.committed is True
     assert len(db.added) == 1
+    assert db.added[0].result_metadata == {
+        "target": {
+            "original_input": "https://example.com",
+            "normalized_url": "https://example.com",
+            "hostname": "example.com",
+            "resolved_public_ips": ["93.184.216.34"],
+            "final_redirect_url": "https://example.com",
+            "scanable_target_type": "url",
+            "redirects_followed": False,
+        }
+    }
     assert queued == [(str(scan_id), "https://example.com")]

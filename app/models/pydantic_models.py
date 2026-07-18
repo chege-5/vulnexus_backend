@@ -17,6 +17,8 @@ class ScanURLRequest(BaseModel):
 class ScanStatusResponse(BaseModel):
     scan_id: uuid.UUID
     status: str
+    ai_review_status: str = "pending"
+    ai_review_error: Optional[str] = None
     progress: int
     stage: Optional[str] = None
     message: Optional[str] = None
@@ -24,6 +26,14 @@ class ScanStatusResponse(BaseModel):
     details: dict = Field(default_factory=dict)
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
+
+
+class AIReviewStatusResponse(BaseModel):
+    scan_id: uuid.UUID
+    ai_review_status: str
+    ai_review_error: Optional[str] = None
+    review: Optional[dict] = None
+    enhanced_report_ready: bool = False
 
 
 class ScanHistoryItem(BaseModel):
@@ -149,6 +159,8 @@ class CVEOut(BaseModel):
 class ScanResultResponse(BaseModel):
     scan_id: uuid.UUID
     status: str
+    ai_review_status: str = "pending"
+    ai_review_error: Optional[str] = None
     overall_score: Optional[float] = None
     vulnerabilities: list[VulnerabilityOut] = Field(default_factory=list)
     target: str
@@ -224,6 +236,9 @@ class RuleVulnerability(BaseModel):
     crypto_feature: Optional[str] = None
     confidence: float = 0.8
     confidence_label: str = "probable"
+    default_severity: Optional[str] = None
+    cvss_hint: Optional[float] = None
+    requires_review: bool = False
     evidence: dict = Field(default_factory=dict)
     explanation: Optional[str] = None
     remediation: Optional[str] = None

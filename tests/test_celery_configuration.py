@@ -15,6 +15,8 @@ def test_celery_uses_the_configured_broker_and_result_backend():
     assert celery_app.conf.worker_prefetch_multiplier == 1
     assert celery_app.conf.task_soft_time_limit == settings.CELERY_TASK_SOFT_TIME_LIMIT
     assert celery_app.conf.task_time_limit == settings.CELERY_TASK_TIME_LIMIT
+    assert celery_app.conf.task_default_queue == "scans"
+    assert celery_app.conf.task_routes["app.tasks.run_url_scan_task"]["queue"] == "scans"
 
 
 def test_celery_worker_engine_uses_null_pool(monkeypatch):

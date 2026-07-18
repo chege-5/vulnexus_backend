@@ -259,7 +259,13 @@ class Settings:
         self.METRICS_TOKEN = _get_optional_str("METRICS_TOKEN")
         self.SESSION_COOKIE_NAME = _get_str("SESSION_COOKIE_NAME", "vulnexus_refresh")
         self.SESSION_COOKIE_SECURE = _get_bool("SESSION_COOKIE_SECURE", self.IS_PRODUCTION)
-        self.SESSION_COOKIE_SAMESITE = _get_str("SESSION_COOKIE_SAMESITE", "lax").lower()
+        # Vercel and Railway deployments are commonly cross-site.  `lax`
+        # cookies are not sent on fetch/XHR in that topology, causing refresh
+        # to fail with a misleading 401 after the in-memory access token dies.
+        self.SESSION_COOKIE_SAMESITE = _get_str(
+            "SESSION_COOKIE_SAMESITE",
+            "none" if self.IS_PRODUCTION else "lax",
+        ).lower()
         self.SESSION_COOKIE_DOMAIN = _get_optional_str("SESSION_COOKIE_DOMAIN")
         self.SMTP_HOST = _get_optional_str("SMTP_HOST")
         self.SMTP_PORT = _get_int("SMTP_PORT", 587)
@@ -283,6 +289,10 @@ class Settings:
                 raise RuntimeError("SMTP_HOST, SMTP_FROM_EMAIL, PASSWORD_RESET_URL, and EMAIL_VERIFICATION_URL must be configured in production")
             if any("localhost" in origin or "127.0.0.1" in origin for origin in self.CORS_ORIGINS.split(",")):
                 raise RuntimeError("CORS_ORIGINS must not contain local development origins in production")
+            if self.SESSION_COOKIE_SAMESITE not in {"lax", "strict", "none"}:
+                raise RuntimeError("SESSION_COOKIE_SAMESITE must be lax, strict, or none")
+            if self.SESSION_COOKIE_SAMESITE == "none" and not self.SESSION_COOKIE_SECURE:
+                raise RuntimeError("SESSION_COOKIE_SECURE must be enabled when SESSION_COOKIE_SAMESITE=none")
 
         # Development remains usable without a committed secret. Production never does.
         self.SECRET_KEY = self.SECRET_KEY or "development-only-not-for-deployment"
