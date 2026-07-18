@@ -37,6 +37,13 @@ class ScanStatus(str, enum.Enum):
     CANCELED = "canceled"
 
 
+class AIReviewStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class Severity(str, enum.Enum):
     LOW = "Low"
     MEDIUM = "Medium"
@@ -218,6 +225,8 @@ class Scan(Base):
     organization_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("organizations.id"), index=True, nullable=True)
     project_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("projects.id"), index=True, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default=ScanStatus.QUEUED.value, index=True)
+    ai_review_status: Mapped[str] = mapped_column(String(32), default=AIReviewStatus.PENDING.value, index=True, nullable=False)
+    ai_review_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

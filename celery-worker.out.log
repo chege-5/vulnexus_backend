@@ -1,0 +1,79 @@
+ 
+ -------------- celery@JIMM v5.3.6 (emerald-rush)
+--- ***** ----- 
+-- ******* ---- Windows-10-10.0.26200-SP0 2026-07-17 09:33:16
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         vulnexus_worker:0x17cfd0f4750
+- ** ---------- .> transport:   redis://localhost:6379/0
+- ** ---------- .> results:     redis://localhost:6379/0
+- *** --- * --- .> concurrency: 1 (solo)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> celery           exchange=celery(direct) key=celery
+                .> scans            exchange=scans(direct) key=scans
+
+[tasks]
+  . app.tasks.run_ai_review_task
+  . app.tasks.run_file_scan_task
+  . app.tasks.run_github_scan_task
+  . app.tasks.run_url_scan_task
+
+{"time":"2026-07-17 09:33:16,400","level":"INFO","module":"app.celery_app","message":"Task start scan_id=fa8760a1-e6b3-436b-814d-00bdd1c71aa1"}
+{"time":"2026-07-17 09:33:16,403","level":"INFO","module":"app.celery_app","message":"Scan execution start scan_id=fa8760a1-e6b3-436b-814d-00bdd1c71aa1"}
+{"time":"2026-07-17 09:33:16,529","level":"INFO","module":"app.utils.cache","message":"Redis cache connected"}
+{"time":"2026-07-17 09:33:19,354","level":"INFO","module":"app.celery_app","message":"Scan execution complete scan_id=fa8760a1-e6b3-436b-814d-00bdd1c71aa1 status=completed"}
+{"time":"2026-07-17 09:33:19,354","level":"INFO","module":"app.celery_app","message":"Celery DB engine disposed"}
+{"time":"2026-07-17 09:33:19,354","level":"INFO","module":"app.celery_app","message":"Celery task event loop closed"}
+{"time":"2026-07-17 09:33:19,354","level":"INFO","module":"app.celery_app","message":"Task return scan_id=fa8760a1-e6b3-436b-814d-00bdd1c71aa1 status=completed"}
+{"time":"2026-07-17 09:33:19,359","level":"INFO","module":"app.celery_app","message":"Task cleanup complete scan_id=fa8760a1-e6b3-436b-814d-00bdd1c71aa1"}
+{"time":"2026-07-17 09:33:19,413","level":"INFO","module":"app.celery_app","message":"AI review task start scan_id=fa8760a1-e6b3-436b-814d-00bdd1c71aa1"}
+{"time":"2026-07-17 09:33:19,564","level":"INFO","module":"app.services.integrations.cache","message":"Integration cache connected to Redis"}
+{"time":"2026-07-17 09:38:28,877","level":"INFO","module":"app.celery_app","message":"Celery DB engine disposed"}
+{"time":"2026-07-17 09:38:28,877","level":"INFO","module":"app.celery_app","message":"Celery task event loop closed"}
+{"time":"2026-07-17 09:38:28,881","level":"INFO","module":"app.celery_app","message":"AI review task complete scan_id=fa8760a1-e6b3-436b-814d-00bdd1c71aa1 status=completed"}
+{"time":"2026-07-17 09:38:28,890","level":"INFO","module":"app.celery_app","message":"Task start scan_id=737b68f1-6bed-4d64-acfa-e1d03b674e5a"}
+{"time":"2026-07-17 09:38:28,898","level":"INFO","module":"app.celery_app","message":"Scan execution start scan_id=737b68f1-6bed-4d64-acfa-e1d03b674e5a"}
+{"time":"2026-07-17 09:38:28,971","level":"INFO","module":"app.utils.cache","message":"Redis cache connected"}
+{"time":"2026-07-17 09:38:31,536","level":"INFO","module":"app.celery_app","message":"Scan execution complete scan_id=737b68f1-6bed-4d64-acfa-e1d03b674e5a status=completed"}
+{"time":"2026-07-17 09:38:31,544","level":"INFO","module":"app.celery_app","message":"Celery DB engine disposed"}
+{"time":"2026-07-17 09:38:31,544","level":"INFO","module":"app.celery_app","message":"Celery task event loop closed"}
+{"time":"2026-07-17 09:38:31,544","level":"INFO","module":"app.celery_app","message":"Task return scan_id=737b68f1-6bed-4d64-acfa-e1d03b674e5a status=completed"}
+{"time":"2026-07-17 09:38:31,548","level":"INFO","module":"app.celery_app","message":"Task cleanup complete scan_id=737b68f1-6bed-4d64-acfa-e1d03b674e5a"}
+{"time":"2026-07-17 09:38:31,608","level":"INFO","module":"app.celery_app","message":"Task start scan_id=dd15de62-3d44-487c-9cbe-ce4b13b23e86"}
+{"time":"2026-07-17 09:38:31,610","level":"INFO","module":"app.celery_app","message":"Scan execution start scan_id=dd15de62-3d44-487c-9cbe-ce4b13b23e86"}
+{"time":"2026-07-17 09:38:31,705","level":"INFO","module":"app.utils.cache","message":"Redis cache connected"}
+{"time":"2026-07-17 09:38:34,553","level":"INFO","module":"app.celery_app","message":"Scan execution complete scan_id=dd15de62-3d44-487c-9cbe-ce4b13b23e86 status=completed"}
+{"time":"2026-07-17 09:38:34,557","level":"INFO","module":"app.celery_app","message":"Celery DB engine disposed"}
+{"time":"2026-07-17 09:38:34,557","level":"INFO","module":"app.celery_app","message":"Celery task event loop closed"}
+{"time":"2026-07-17 09:38:34,557","level":"INFO","module":"app.celery_app","message":"Task return scan_id=dd15de62-3d44-487c-9cbe-ce4b13b23e86 status=completed"}
+{"time":"2026-07-17 09:38:34,560","level":"INFO","module":"app.celery_app","message":"Task cleanup complete scan_id=dd15de62-3d44-487c-9cbe-ce4b13b23e86"}
+{"time":"2026-07-17 09:38:34,617","level":"INFO","module":"app.celery_app","message":"AI review task start scan_id=dd15de62-3d44-487c-9cbe-ce4b13b23e86"}
+{"time":"2026-07-17 09:38:34,784","level":"INFO","module":"app.services.integrations.cache","message":"Integration cache connected to Redis"}
+{"time":"2026-07-17 09:43:48,383","level":"INFO","module":"app.celery_app","message":"Celery DB engine disposed"}
+{"time":"2026-07-17 09:43:48,385","level":"INFO","module":"app.celery_app","message":"Celery task event loop closed"}
+{"time":"2026-07-17 09:43:48,387","level":"INFO","module":"app.celery_app","message":"AI review task complete scan_id=dd15de62-3d44-487c-9cbe-ce4b13b23e86 status=completed"}
+{"time":"2026-07-17 09:46:26,786","level":"INFO","module":"app.celery_app","message":"AI review task start scan_id=b665bdb7-af62-4d74-8e73-ef5587ee5a7e"}
+{"time":"2026-07-17 09:46:27,221","level":"INFO","module":"app.services.integrations.cache","message":"Integration cache connected to Redis"}
+{"time":"2026-07-17 09:51:37,398","level":"INFO","module":"app.celery_app","message":"Celery DB engine disposed"}
+{"time":"2026-07-17 09:51:37,400","level":"INFO","module":"app.celery_app","message":"Celery task event loop closed"}
+{"time":"2026-07-17 09:51:37,402","level":"INFO","module":"app.celery_app","message":"AI review task complete scan_id=b665bdb7-af62-4d74-8e73-ef5587ee5a7e status=completed"}
+{"time":"2026-07-17 10:03:29,830","level":"INFO","module":"app.celery_app","message":"Task start scan_id=be88d41a-fb95-49a4-b751-1b59a02991f0"}
+{"time":"2026-07-17 10:03:29,831","level":"INFO","module":"app.celery_app","message":"Scan execution start scan_id=be88d41a-fb95-49a4-b751-1b59a02991f0"}
+{"time":"2026-07-17 10:03:30,117","level":"INFO","module":"app.utils.cache","message":"Redis cache connected"}
+{"time":"2026-07-17 10:03:35,334","level":"INFO","module":"app.celery_app","message":"Scan execution complete scan_id=be88d41a-fb95-49a4-b751-1b59a02991f0 status=completed"}
+{"time":"2026-07-17 10:03:35,341","level":"INFO","module":"app.celery_app","message":"Celery DB engine disposed"}
+{"time":"2026-07-17 10:03:35,343","level":"INFO","module":"app.celery_app","message":"Celery task event loop closed"}
+{"time":"2026-07-17 10:03:35,345","level":"INFO","module":"app.celery_app","message":"Task return scan_id=be88d41a-fb95-49a4-b751-1b59a02991f0 status=completed"}
+{"time":"2026-07-17 10:03:35,352","level":"INFO","module":"app.celery_app","message":"Task cleanup complete scan_id=be88d41a-fb95-49a4-b751-1b59a02991f0"}
+{"time":"2026-07-17 10:06:19,498","level":"INFO","module":"app.celery_app","message":"AI review task start scan_id=6085a64f-c191-4b03-8610-16ae4b8649fb"}
+{"time":"2026-07-17 10:06:20,182","level":"INFO","module":"app.services.integrations.cache","message":"Integration cache connected to Redis"}
+{"time":"2026-07-17 10:16:44,325","level":"INFO","module":"app.celery_app","message":"Celery DB engine disposed"}
+{"time":"2026-07-17 10:16:44,325","level":"INFO","module":"app.celery_app","message":"Celery task event loop closed"}
+{"time":"2026-07-17 10:16:44,327","level":"INFO","module":"app.celery_app","message":"AI review task complete scan_id=6085a64f-c191-4b03-8610-16ae4b8649fb status=completed"}
+{"time":"2026-07-17 10:51:53,224","level":"INFO","module":"app.celery_app","message":"AI review task start scan_id=28470e36-9097-417b-8e07-7e0877b4430e"}
+{"time":"2026-07-17 10:51:53,814","level":"INFO","module":"app.services.integrations.cache","message":"Integration cache connected to Redis"}
+{"time":"2026-07-17 10:57:02,757","level":"INFO","module":"app.celery_app","message":"Celery DB engine disposed"}
+{"time":"2026-07-17 10:57:02,760","level":"INFO","module":"app.celery_app","message":"Celery task event loop closed"}
+{"time":"2026-07-17 10:57:02,761","level":"INFO","module":"app.celery_app","message":"AI review task complete scan_id=28470e36-9097-417b-8e07-7e0877b4430e status=completed"}

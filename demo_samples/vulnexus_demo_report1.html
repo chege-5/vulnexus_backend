@@ -1,0 +1,1129 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>VulNexus Security Audit Report</title>
+<style>
+@page { margin: 22mm 16mm 18mm 16mm; }
+body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    margin: 0;
+    color: #0f172a;
+    background: #f4f7fb;
+}
+.page {
+    padding: 28px;
+}
+.cover {
+    background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%);
+    color: white;
+    border-radius: 24px;
+    padding: 42px;
+    margin-bottom: 24px;
+    position: relative;
+    overflow: hidden;
+}
+.cover::after {
+    content: 'CONFIDENTIAL';
+    position: absolute;
+    right: -8px;
+    top: 24px;
+    transform: rotate(12deg);
+    font-size: 72px;
+    font-weight: 800;
+    letter-spacing: 0.18em;
+    opacity: 0.08;
+}
+.brand {
+    text-transform: uppercase;
+    letter-spacing: 0.24em;
+    font-size: 12px;
+    opacity: 0.9;
+}
+.cover h1 {
+    margin: 14px 0 8px 0;
+    font-size: 34px;
+}
+.cover p {
+    margin: 0 0 8px 0;
+    max-width: 760px;
+    line-height: 1.6;
+}
+.summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin: 20px 0;
+}
+.metric {
+    background: white;
+    border: 1px solid #d8e0ef;
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+.metric-label {
+    display: block;
+    color: #64748b;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 8px;
+}
+.metric-value {
+    font-size: 28px;
+    font-weight: 800;
+    color: #0f172a;
+}
+.section {
+    background: white;
+    border: 1px solid #d8e0ef;
+    border-radius: 20px;
+    padding: 24px;
+    margin-bottom: 18px;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+}
+.section h2 {
+    margin: 0 0 14px 0;
+    font-size: 22px;
+    color: #0f172a;
+}
+.section h3 {
+    margin: 0 0 10px 0;
+    color: #1d4ed8;
+}
+.muted {
+    color: #64748b;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+}
+th, td {
+    border-bottom: 1px solid #e2e8f0;
+    padding: 12px 10px;
+    text-align: left;
+    vertical-align: top;
+    font-size: 13px;
+}
+th {
+    background: #eff6ff;
+    color: #0f172a;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.severity-critical { color: #b91c1c; font-weight: 700; }
+.severity-high { color: #ea580c; font-weight: 700; }
+.severity-medium { color: #ca8a04; font-weight: 700; }
+.severity-low { color: #15803d; font-weight: 700; }
+.pill {
+    display: inline-block;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: #e2e8f0;
+    font-size: 12px;
+    font-weight: 700;
+}
+.pill.critical { background: #fee2e2; color: #991b1b; }
+.pill.high { background: #ffedd5; color: #9a3412; }
+.pill.medium { background: #fef3c7; color: #92400e; }
+.pill.low { background: #dcfce7; color: #166534; }
+.finding {
+    border-left: 4px solid #1d4ed8;
+    padding: 14px 16px;
+    margin: 10px 0;
+    background: #f8fbff;
+    border-radius: 14px;
+}
+.finding pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 12px;
+    border-radius: 10px;
+    overflow-x: auto;
+}
+.toc {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+.toc span {
+    background: #eff6ff;
+    border: 1px solid #dbeafe;
+    border-radius: 12px;
+    padding: 10px 12px;
+    font-size: 13px;
+}
+footer {
+    margin-top: 24px;
+    color: #64748b;
+    font-size: 12px;
+    text-align: center;
+}
+.watermark {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(-18deg);
+    font-size: 88px;
+    font-weight: 900;
+    letter-spacing: 0.18em;
+    color: rgba(15, 23, 42, 0.05);
+    pointer-events: none;
+}
+@media print {
+    body { background: white; }
+    .page { padding: 0; }
+    .section, .metric, .cover { box-shadow: none; }
+    .section { break-inside: avoid; page-break-inside: avoid; }
+    .finding { break-inside: avoid; page-break-inside: avoid; }
+    table { break-inside: auto; }
+    thead { display: table-header-group; }
+    tr { break-inside: avoid; page-break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="watermark">CONFIDENTIAL</div>
+<div class="page">
+<section class="cover">
+    <div class="brand">VulNexus Security Audit</div>
+    <h1>VulNexus seven-category demo</h1>
+    <p>Regex-based static analysis, active TLS probing, and HTTP header inspection report for DEMO targets. This artifact summarizes representative security weakness findings for review and demonstration.</p>
+    <p><strong>Report ID:</strong> 00000000-0000-0000-0000-000000000001<br><strong>Generated:</strong> 2026-07-10 05:41:44 UTC<br><strong>Started:</strong> Not Applicable<br><strong>Finished:</strong> Not Applicable</p>
+</section>
+
+<section class="section">
+    <h2>Executive Summary</h2>
+    <div class="summary-grid">
+        <div class="metric"><span class="metric-label">Overall Score</span><span class="metric-value">88 / 100</span></div>
+        <div class="metric"><span class="metric-label">Audit Verdict</span><span class="metric-value">Critical</span></div>
+        <div class="metric"><span class="metric-label">Findings</span><span class="metric-value">35</span></div>
+        <div class="metric"><span class="metric-label">Critical</span><span class="metric-value">3</span></div>
+    </div>
+    <p class="muted">This assessment identified 35 findings across application code, repository assets, and cryptographic posture. Review the sections below for prioritized remediation actions and compliance status.</p>
+    
+</section>
+
+<section class="section">
+    <h2>Table of Contents</h2>
+    <div class="toc">
+        <span>Executive Summary</span>
+        <span>Risk Summary</span>
+        <span>Repository and Scan Context</span>
+        <span>Findings</span>
+        <span>Compliance Mapping</span>
+        <span>Recommendations</span>
+    </div>
+</section>
+
+<section class="section">
+    <h2>Risk Summary</h2>
+    <div class="summary-grid">
+        <div class="metric"><span class="metric-label">Critical</span><span class="metric-value">3</span></div>
+        <div class="metric"><span class="metric-label">High</span><span class="metric-value">14</span></div>
+        <div class="metric"><span class="metric-label">Medium</span><span class="metric-value">9</span></div>
+        <div class="metric"><span class="metric-label">Low</span><span class="metric-value">9</span></div>
+    </div>
+</section>
+
+<section class="section">
+    <h2>Findings</h2>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>#</th><th>Rule ID</th><th>Rule Name</th><th>Category</th><th>Severity</th><th>Confidence</th><th>Affected Asset</th><th>Line</th><th>Column</th><th>Matched Pattern</th><th>Evidence</th><th>Recommendation</th><th>CWE / OWASP</th>
+            </tr>
+        </thead>
+        <tbody>
+        
+            <tr>
+                <td>1</td>
+                <td>WEAK_HASH_MD5</td>
+                <td>hashlib.md5() used</td>
+                <td>Weak hashing</td>
+                <td><span class="pill medium">Medium</span></td>
+                <td>90%</td>
+                <td>tests\fixtures\security_checks\weak_hashing_sample.py</td>
+                <td>6</td>
+                <td>12</td>
+                <td>WEAK_HASH_MD5_PY_HASHLIB</td>
+                <td>{&#34;line_number&#34;: 6, &#34;column_number&#34;: 12, &#34;line_preview&#34;: &#34;return hashlib.md5(password.encode()).hexdigest()&#34;, &#34;context_preview&#34;: &#34;\ndef legacy_password_digest(password):\n    return hashlib.md5(password.encode()).hexdigest()\n\n&#34;, &#34;source_rule_id&#34;: &#34;WEAK_HASH_MD5_PY_HASHLIB&#34;, &#34;rule_name&#34;: &#34;hashlib.md5() used&#34;, &#34;category&#34;: &#34;Weak hashing&#34;, &#34;matched_pattern&#34;: &#34;WEAK_HASH_MD5_PY_HASHLIB&#34;, &#34;regex&#34;: &#34;\\bhashlib\\.md5\\s*\\(&#34;, &#34;matched_text&#34;: &#34;hashlib.md5(&#34;, &#34;occurrence&#34;: 1, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 5.3}</td>
+                <td>Use SHA-256, SHA-3, or a password-specific KDF for password storage.</td>
+                <td>CWE-327 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>2</td>
+                <td>WEAK_HASH_CRC32_SECURITY</td>
+                <td>CRC32 used in security-sensitive logic</td>
+                <td>Weak hashing</td>
+                <td><span class="pill medium">Medium</span></td>
+                <td>90%</td>
+                <td>tests\fixtures\security_checks\weak_hashing_sample.py</td>
+                <td>10</td>
+                <td>12</td>
+                <td>WEAK_HASH_CRC32_SECURITY</td>
+                <td>{&#34;line_number&#34;: 10, &#34;column_number&#34;: 12, &#34;line_preview&#34;: &#34;return zlib.crc32(token.encode())&#34;, &#34;context_preview&#34;: &#34;\ndef reset_token_marker(token):\n    return zlib.crc32(token.encode())\n&#34;, &#34;source_rule_id&#34;: &#34;WEAK_HASH_CRC32_SECURITY&#34;, &#34;rule_name&#34;: &#34;CRC32 used in security-sensitive logic&#34;, &#34;category&#34;: &#34;Weak hashing&#34;, &#34;matched_pattern&#34;: &#34;WEAK_HASH_CRC32_SECURITY&#34;, &#34;regex&#34;: &#34;\\bCRC32\\b|\\bcrc32\\s*\\(|zlib\\.crc32\\s*\\(&#34;, &#34;matched_text&#34;: &#34;zlib.crc32(&#34;, &#34;occurrence&#34;: 2, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 4.0}</td>
+                <td>Use a cryptographic hash or MAC for integrity, token, or signature decisions.</td>
+                <td>CWE-327 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>3</td>
+                <td>HARDCODED_KEY</td>
+                <td>AWS access key ID detected</td>
+                <td>Hardcoded keys</td>
+                <td><span class="pill critical">Critical</span></td>
+                <td>97%</td>
+                <td>tests\fixtures\security_checks\hardcoded_keys_sample.env</td>
+                <td>1</td>
+                <td>19</td>
+                <td>HARDCODED_AWS_ACCESS_KEY</td>
+                <td>{&#34;line_number&#34;: 1, &#34;column_number&#34;: 19, &#34;line_preview&#34;: &#34;AWS_ACCESS_KEY_ID=AKIA...MPLE&#34;, &#34;context_preview&#34;: &#34;AWS_ACCESS_KEY_ID=AKIA...MPLE\nJWT_SECRET=\&#34;[REDACTED]\&#34;\nDATABASE_URL=post...exus&#34;, &#34;source_rule_id&#34;: &#34;HARDCODED_AWS_ACCESS_KEY&#34;, &#34;rule_name&#34;: &#34;AWS access key ID detected&#34;, &#34;category&#34;: &#34;Hardcoded keys&#34;, &#34;matched_pattern&#34;: &#34;HARDCODED_AWS_ACCESS_KEY&#34;, &#34;regex&#34;: &#34;(?:AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{12,}&#34;, &#34;matched_text&#34;: &#34;AKIA...MPLE&#34;, &#34;occurrence&#34;: 1, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 9.1}</td>
+                <td>Remove the key, rotate it in AWS IAM, and inject credentials from a managed secret store.</td>
+                <td>CWE-798 / A07 Identification and Authentication Failures</td>
+            </tr>
+        
+            <tr>
+                <td>4</td>
+                <td>HARDCODED_KEY</td>
+                <td>JWT secret detected</td>
+                <td>Hardcoded keys</td>
+                <td><span class="pill critical">Critical</span></td>
+                <td>94%</td>
+                <td>tests\fixtures\security_checks\hardcoded_keys_sample.env</td>
+                <td>2</td>
+                <td>1</td>
+                <td>HARDCODED_JWT_SECRET</td>
+                <td>{&#34;line_number&#34;: 2, &#34;column_number&#34;: 1, &#34;line_preview&#34;: &#34;JWT_SECRET=\&#34;[REDACTED]\&#34;&#34;, &#34;context_preview&#34;: &#34;AWS_ACCESS_KEY_ID=AKIA...MPLE\nJWT_SECRET=\&#34;[REDACTED]\&#34;\nDATABASE_URL=post...exus\nGCP_PRIVATE_KEY_ID=[REDACTED]&#34;, &#34;source_rule_id&#34;: &#34;HARDCODED_JWT_SECRET&#34;, &#34;rule_name&#34;: &#34;JWT secret detected&#34;, &#34;category&#34;: &#34;Hardcoded keys&#34;, &#34;matched_pattern&#34;: &#34;HARDCODED_JWT_SECRET&#34;, &#34;regex&#34;: &#34;(?:jwt|jws)[_\\-]?secret\\s*[:=]\\s*[\&#34;&#39;][^\&#34;&#39;]{8,}[\&#34;&#39;]&#34;, &#34;matched_text&#34;: &#34;JWT_SECRET=\&#34;[REDACTED]\&#34;&#34;, &#34;occurrence&#34;: 2, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 9.1}</td>
+                <td>Move JWT signing secrets to a secret manager and rotate tokens after replacement.</td>
+                <td>CWE-798 / A07 Identification and Authentication Failures</td>
+            </tr>
+        
+            <tr>
+                <td>5</td>
+                <td>HARDCODED_KEY</td>
+                <td>Database URL with credentials detected</td>
+                <td>Hardcoded keys</td>
+                <td><span class="pill critical">Critical</span></td>
+                <td>95%</td>
+                <td>tests\fixtures\security_checks\hardcoded_keys_sample.env</td>
+                <td>3</td>
+                <td>1</td>
+                <td>HARDCODED_DATABASE_URL</td>
+                <td>{&#34;line_number&#34;: 3, &#34;column_number&#34;: 1, &#34;line_preview&#34;: &#34;DATABASE_URL=post...exus&#34;, &#34;context_preview&#34;: &#34;AWS_ACCESS_KEY_ID=AKIA...MPLE\nJWT_SECRET=\&#34;[REDACTED]\&#34;\nDATABASE_URL=post...exus\nGCP_PRIVATE_KEY_ID=[REDACTED]\n&#34;, &#34;source_rule_id&#34;: &#34;HARDCODED_DATABASE_URL&#34;, &#34;rule_name&#34;: &#34;Database URL with credentials detected&#34;, &#34;category&#34;: &#34;Hardcoded keys&#34;, &#34;matched_pattern&#34;: &#34;HARDCODED_DATABASE_URL&#34;, &#34;regex&#34;: &#34;(?:DATABASE_URL\\s*[:=]\\s*)?[A-Za-z][A-Za-z0-9+.-]*://[^:\\s]+:[^@\\s]+@[^\&#34;&#39;\\s]+&#34;, &#34;matched_text&#34;: &#34;DATABASE_URL=post...exus&#34;, &#34;occurrence&#34;: 3, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 9.1}</td>
+                <td>Move database credentials to secret storage and rotate exposed passwords.</td>
+                <td>CWE-798 / A07 Identification and Authentication Failures</td>
+            </tr>
+        
+            <tr>
+                <td>6</td>
+                <td>HARDCODED_KEY</td>
+                <td>GCP private key ID detected</td>
+                <td>Hardcoded keys</td>
+                <td><span class="pill high">High</span></td>
+                <td>92%</td>
+                <td>tests\fixtures\security_checks\hardcoded_keys_sample.env</td>
+                <td>4</td>
+                <td>1</td>
+                <td>HARDCODED_GCP_PRIVATE_KEY_ID</td>
+                <td>{&#34;line_number&#34;: 4, &#34;column_number&#34;: 1, &#34;line_preview&#34;: &#34;GCP_PRIVATE_KEY_ID=[REDACTED]&#34;, &#34;context_preview&#34;: &#34;JWT_SECRET=\&#34;[REDACTED]\&#34;\nDATABASE_URL=post...exus\nGCP_PRIVATE_KEY_ID=[REDACTED]\n&#34;, &#34;source_rule_id&#34;: &#34;HARDCODED_GCP_PRIVATE_KEY_ID&#34;, &#34;rule_name&#34;: &#34;GCP private key ID detected&#34;, &#34;category&#34;: &#34;Hardcoded keys&#34;, &#34;matched_pattern&#34;: &#34;HARDCODED_GCP_PRIVATE_KEY_ID&#34;, &#34;regex&#34;: &#34;(?:GCP|GOOGLE|FIREBASE)?_?PRIVATE_KEY_ID\\s*[:=]\\s*[\&#34;&#39;]?[A-Za-z0-9_-]{12,}&#34;, &#34;matched_text&#34;: &#34;GCP_PRIVATE_KEY_ID=[REDACTED]&#34;, &#34;occurrence&#34;: 4, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 7.5}</td>
+                <td>Treat exposed key IDs as sensitive context and rotate related service account keys.</td>
+                <td>CWE-798 / A07 Identification and Authentication Failures</td>
+            </tr>
+        
+            <tr>
+                <td>7</td>
+                <td>INSECURE_RANDOM</td>
+                <td>JavaScript Math.random used</td>
+                <td>Insecure randomness</td>
+                <td><span class="pill medium">Medium</span></td>
+                <td>85%</td>
+                <td>tests\fixtures\security_checks\insecure_randomness_sample.js</td>
+                <td>2</td>
+                <td>18</td>
+                <td>INSECURE_RANDOM_JS_MATH_RANDOM</td>
+                <td>{&#34;line_number&#34;: 2, &#34;column_number&#34;: 18, &#34;line_preview&#34;: &#34;const suffix = Math.random().toString(36).slice(2);&#34;, &#34;context_preview&#34;: &#34;function makeResetToken(userId) {\n  const suffix = Math.random().toString(36).slice(2);\n  return `${userId}-${Date.now()}-${suffix}`;\n}&#34;, &#34;source_rule_id&#34;: &#34;INSECURE_RANDOM_JS_MATH_RANDOM&#34;, &#34;rule_name&#34;: &#34;JavaScript Math.random used&#34;, &#34;category&#34;: &#34;Insecure randomness&#34;, &#34;matched_pattern&#34;: &#34;INSECURE_RANDOM_JS_MATH_RANDOM&#34;, &#34;regex&#34;: &#34;\\bMath\\.random\\s*\\(&#34;, &#34;matched_text&#34;: &#34;Math.random(&#34;, &#34;occurrence&#34;: 1, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 5.3}</td>
+                <td>Use Web Crypto getRandomValues or crypto.randomBytes.</td>
+                <td>CWE-330 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>8</td>
+                <td>HARDCODED_AES_KEY</td>
+                <td>Hardcoded AES key</td>
+                <td>Poor key management</td>
+                <td><span class="pill high">High</span></td>
+                <td>88%</td>
+                <td>tests\fixtures\security_checks\poor_key_management_sample.yml</td>
+                <td>2</td>
+                <td>3</td>
+                <td>HARDCODED_AES_KEY</td>
+                <td>{&#34;line_number&#34;: 2, &#34;column_number&#34;: 3, &#34;line_preview&#34;: &#34;key: \&#34;0123...cdef\&#34;&#34;, &#34;context_preview&#34;: &#34;encryption:\n  key: \&#34;0123...cdef\&#34;\n  iv: \&#34;0000000000000000\&#34;\n  salt: \&#34;stat...salt\&#34;&#34;, &#34;source_rule_id&#34;: &#34;HARDCODED_AES_KEY&#34;, &#34;rule_name&#34;: &#34;Hardcoded AES key&#34;, &#34;category&#34;: &#34;Poor key management&#34;, &#34;matched_pattern&#34;: &#34;HARDCODED_AES_KEY&#34;, &#34;regex&#34;: &#34;(?:aes[_\\-]?key|key)\\s*[:=]\\s*(?:b?[\&#34;&#39;][A-Za-z0-9+/=]{16,}[\&#34;&#39;])&#34;, &#34;matched_text&#34;: &#34;key: \&#34;0123...cdef\&#34;&#34;, &#34;occurrence&#34;: 1, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 7.5}</td>
+                <td>Generate encryption keys securely and manage them through KMS or a vault.</td>
+                <td>CWE-321 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>9</td>
+                <td>STATIC_IV</td>
+                <td>Static initialization vector detected</td>
+                <td>Poor key management</td>
+                <td><span class="pill high">High</span></td>
+                <td>90%</td>
+                <td>tests\fixtures\security_checks\poor_key_management_sample.yml</td>
+                <td>3</td>
+                <td>3</td>
+                <td>STATIC_IV</td>
+                <td>{&#34;line_number&#34;: 3, &#34;column_number&#34;: 3, &#34;line_preview&#34;: &#34;iv: \&#34;0000000000000000\&#34;&#34;, &#34;context_preview&#34;: &#34;encryption:\n  key: \&#34;0123...cdef\&#34;\n  iv: \&#34;0000000000000000\&#34;\n  salt: \&#34;stat...salt\&#34;\nauth:&#34;, &#34;source_rule_id&#34;: &#34;STATIC_IV&#34;, &#34;rule_name&#34;: &#34;Static initialization vector detected&#34;, &#34;category&#34;: &#34;Poor key management&#34;, &#34;matched_pattern&#34;: &#34;STATIC_IV&#34;, &#34;regex&#34;: &#34;\\biv\\s*[:=]\\s*(?:b?[\&#34;&#39;][^\&#34;&#39;]{8,}[\&#34;&#39;]|bytes\\.fromhex\\([\&#34;&#39;][0-9a-f]{16,}[\&#34;&#39;]\\))&#34;, &#34;matched_text&#34;: &#34;iv: \&#34;0000000000000000\&#34;&#34;, &#34;occurrence&#34;: 2, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 7.5}</td>
+                <td>Generate a unique unpredictable IV or nonce per encryption operation.</td>
+                <td>CWE-329 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>10</td>
+                <td>STATIC_SALT</td>
+                <td>Static salt detected</td>
+                <td>Poor key management</td>
+                <td><span class="pill medium">Medium</span></td>
+                <td>82%</td>
+                <td>tests\fixtures\security_checks\poor_key_management_sample.yml</td>
+                <td>4</td>
+                <td>3</td>
+                <td>STATIC_SALT</td>
+                <td>{&#34;line_number&#34;: 4, &#34;column_number&#34;: 3, &#34;line_preview&#34;: &#34;salt: \&#34;stat...salt\&#34;&#34;, &#34;context_preview&#34;: &#34;  key: \&#34;0123...cdef\&#34;\n  iv: \&#34;0000000000000000\&#34;\n  salt: \&#34;stat...salt\&#34;\nauth:\n  jwt_...ret:\&#34;short\&#34;&#34;, &#34;source_rule_id&#34;: &#34;STATIC_SALT&#34;, &#34;rule_name&#34;: &#34;Static salt detected&#34;, &#34;category&#34;: &#34;Poor key management&#34;, &#34;matched_pattern&#34;: &#34;STATIC_SALT&#34;, &#34;regex&#34;: &#34;\\bsalt\\s*[:=]\\s*(?:b?[\&#34;&#39;][^\&#34;&#39;]{6,}[\&#34;&#39;]|bytes\\.fromhex\\([\&#34;&#39;][0-9a-f]{12,}[\&#34;&#39;]\\))&#34;, &#34;matched_text&#34;: &#34;salt: \&#34;stat...salt\&#34;&#34;, &#34;occurrence&#34;: 3, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 5.3}</td>
+                <td>Generate a unique random salt per password hash or key derivation operation.</td>
+                <td>CWE-760 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>11</td>
+                <td>WEAK_JWT_SECRET</td>
+                <td>Weak JWT secret length</td>
+                <td>Poor key management</td>
+                <td><span class="pill high">High</span></td>
+                <td>92%</td>
+                <td>tests\fixtures\security_checks\poor_key_management_sample.yml</td>
+                <td>6</td>
+                <td>3</td>
+                <td>WEAK_JWT_SECRET</td>
+                <td>{&#34;line_number&#34;: 6, &#34;column_number&#34;: 3, &#34;line_preview&#34;: &#34;jwt_secret: \&#34;[REDACTED]\&#34;&#34;, &#34;context_preview&#34;: &#34;  salt: \&#34;stat...salt\&#34;\nauth:\n  jwt_...ret:\&#34;short\&#34;\n&#34;, &#34;source_rule_id&#34;: &#34;WEAK_JWT_SECRET&#34;, &#34;rule_name&#34;: &#34;Weak JWT secret length&#34;, &#34;category&#34;: &#34;Poor key management&#34;, &#34;matched_pattern&#34;: &#34;WEAK_JWT_SECRET&#34;, &#34;regex&#34;: &#34;(?:jwt|jws)[_\\-]?secret\\s*[:=]\\s*[\&#34;&#39;][^\&#34;&#39;]{1,15}[\&#34;&#39;]&#34;, &#34;matched_text&#34;: &#34;jwt_secret: \&#34;[REDACTED]\&#34;&#34;, &#34;occurrence&#34;: 4, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 7.5}</td>
+                <td>Use a high-entropy JWT secret of at least 32 bytes from a secret manager.</td>
+                <td>CWE-326, CWE-798 / A07 Identification and Authentication Failures</td>
+            </tr>
+        
+            <tr>
+                <td>12</td>
+                <td>WEAK_CIPHER_3DES</td>
+                <td>Triple DES cipher detected</td>
+                <td>Weak cryptographic modes</td>
+                <td><span class="pill high">High</span></td>
+                <td>94%</td>
+                <td>tests\fixtures\security_checks\weak_crypto_modes_sample.py</td>
+                <td>1</td>
+                <td>32</td>
+                <td>WEAK_CIPHER_3DES</td>
+                <td>{&#34;line_number&#34;: 1, &#34;column_number&#34;: 32, &#34;line_preview&#34;: &#34;from Crypto.Cipher import AES, DES3, ARC4&#34;, &#34;context_preview&#34;: &#34;from Crypto.Cipher import AES, DES3, ARC4\nfrom cryptography.hazmat.primitives.asymmetric import rsa\n&#34;, &#34;source_rule_id&#34;: &#34;WEAK_CIPHER_3DES&#34;, &#34;rule_name&#34;: &#34;Triple DES cipher detected&#34;, &#34;category&#34;: &#34;Weak cryptographic modes&#34;, &#34;matched_pattern&#34;: &#34;WEAK_CIPHER_3DES&#34;, &#34;regex&#34;: &#34;\\b3DES\\b|DESede|TripleDES|DES-EDE|DES3&#34;, &#34;matched_text&#34;: &#34;DES3&#34;, &#34;occurrence&#34;: 1, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 7.5}</td>
+                <td>Replace 3DES with AES-GCM or ChaCha20-Poly1305.</td>
+                <td>CWE-326 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>13</td>
+                <td>WEAK_CIPHER_RC4</td>
+                <td>RC4 cipher detected</td>
+                <td>Weak cryptographic modes</td>
+                <td><span class="pill high">High</span></td>
+                <td>95%</td>
+                <td>tests\fixtures\security_checks\weak_crypto_modes_sample.py</td>
+                <td>1</td>
+                <td>38</td>
+                <td>WEAK_CIPHER_RC4</td>
+                <td>{&#34;line_number&#34;: 1, &#34;column_number&#34;: 38, &#34;line_preview&#34;: &#34;from Crypto.Cipher import AES, DES3, ARC4&#34;, &#34;context_preview&#34;: &#34;from Crypto.Cipher import AES, DES3, ARC4\nfrom cryptography.hazmat.primitives.asymmetric import rsa\n&#34;, &#34;source_rule_id&#34;: &#34;WEAK_CIPHER_RC4&#34;, &#34;rule_name&#34;: &#34;RC4 cipher detected&#34;, &#34;category&#34;: &#34;Weak cryptographic modes&#34;, &#34;matched_pattern&#34;: &#34;WEAK_CIPHER_RC4&#34;, &#34;regex&#34;: &#34;\\bRC4\\b|ARC4|Cipher\\.getInstance\\(\\s*[\&#34;&#39;]RC4&#34;, &#34;matched_text&#34;: &#34;ARC4&#34;, &#34;occurrence&#34;: 2, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 7.5}</td>
+                <td>Disable RC4 and use modern AEAD ciphers.</td>
+                <td>CWE-327 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>14</td>
+                <td>HARDCODED_AES_KEY</td>
+                <td>Hardcoded AES key</td>
+                <td>Poor key management</td>
+                <td><span class="pill high">High</span></td>
+                <td>88%</td>
+                <td>tests\fixtures\security_checks\weak_crypto_modes_sample.py</td>
+                <td>5</td>
+                <td>1</td>
+                <td>HARDCODED_AES_KEY</td>
+                <td>{&#34;line_number&#34;: 5, &#34;column_number&#34;: 1, &#34;line_preview&#34;: &#34;key = [RED...TED]\&#34;0123456789abcdef\&#34;&#34;, &#34;context_preview&#34;: &#34;\n\nkey = [RED...TED]\&#34;0123456789abcdef\&#34;\niv = b\&#34;0000000000000000\&#34;\ncipher = AES.new(key, AES.MODE_ECB)&#34;, &#34;source_rule_id&#34;: &#34;HARDCODED_AES_KEY&#34;, &#34;rule_name&#34;: &#34;Hardcoded AES key&#34;, &#34;category&#34;: &#34;Poor key management&#34;, &#34;matched_pattern&#34;: &#34;HARDCODED_AES_KEY&#34;, &#34;regex&#34;: &#34;(?:aes[_\\-]?key|key)\\s*[:=]\\s*(?:b?[\&#34;&#39;][A-Za-z0-9+/=]{16,}[\&#34;&#39;])&#34;, &#34;matched_text&#34;: &#34;key = [RED...TED]\&#34;0123456789abcdef\&#34;&#34;, &#34;occurrence&#34;: 3, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 7.5}</td>
+                <td>Generate encryption keys securely and manage them through KMS or a vault.</td>
+                <td>CWE-321 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>15</td>
+                <td>STATIC_IV</td>
+                <td>Static initialization vector detected</td>
+                <td>Poor key management</td>
+                <td><span class="pill high">High</span></td>
+                <td>90%</td>
+                <td>tests\fixtures\security_checks\weak_crypto_modes_sample.py</td>
+                <td>6</td>
+                <td>1</td>
+                <td>STATIC_IV</td>
+                <td>{&#34;line_number&#34;: 6, &#34;column_number&#34;: 1, &#34;line_preview&#34;: &#34;iv = b\&#34;0000000000000000\&#34;&#34;, &#34;context_preview&#34;: &#34;\nkey = [RED...TED]\&#34;0123456789abcdef\&#34;\niv = b\&#34;0000000000000000\&#34;\ncipher = AES.new(key, AES.MODE_ECB)\ncbc_cipher = AES.new(key, AES.MODE_CBC, iv)&#34;, &#34;source_rule_id&#34;: &#34;STATIC_IV&#34;, &#34;rule_name&#34;: &#34;Static initialization vector detected&#34;, &#34;category&#34;: &#34;Poor key management&#34;, &#34;matched_pattern&#34;: &#34;STATIC_IV&#34;, &#34;regex&#34;: &#34;\\biv\\s*[:=]\\s*(?:b?[\&#34;&#39;][^\&#34;&#39;]{8,}[\&#34;&#39;]|bytes\\.fromhex\\([\&#34;&#39;][0-9a-f]{16,}[\&#34;&#39;]\\))&#34;, &#34;matched_text&#34;: &#34;iv = b\&#34;0000000000000000\&#34;&#34;, &#34;occurrence&#34;: 4, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 7.5}</td>
+                <td>Generate a unique unpredictable IV or nonce per encryption operation.</td>
+                <td>CWE-329 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>16</td>
+                <td>WEAK_CIPHER_AES-ECB</td>
+                <td>AES ECB mode detected</td>
+                <td>Weak cryptographic modes</td>
+                <td><span class="pill high">High</span></td>
+                <td>95%</td>
+                <td>tests\fixtures\security_checks\weak_crypto_modes_sample.py</td>
+                <td>7</td>
+                <td>23</td>
+                <td>WEAK_CIPHER_AES-ECB</td>
+                <td>{&#34;line_number&#34;: 7, &#34;column_number&#34;: 23, &#34;line_preview&#34;: &#34;cipher = AES.new(key, AES.MODE_ECB)&#34;, &#34;context_preview&#34;: &#34;key = [RED...TED]\&#34;0123456789abcdef\&#34;\niv = b\&#34;0000000000000000\&#34;\ncipher = AES.new(key, AES.MODE_ECB)\ncbc_cipher = AES.new(key, AES.MODE_CBC, iv)\nlegacy_des = DES3.new(b\&#34;0123456789abcdef01234567\&#34;, DES3.MODE_CBC, iv)&#34;, &#34;source_rule_id&#34;: &#34;WEAK_CIPHER_AES-ECB&#34;, &#34;rule_name&#34;: &#34;AES ECB mode detected&#34;, &#34;category&#34;: &#34;Weak cryptographic modes&#34;, &#34;matched_pattern&#34;: &#34;WEAK_CIPHER_AES-ECB&#34;, &#34;regex&#34;: &#34;AES(?:/|\\.MODE_)?ECB|MODE_ECB|[\&#34;&#39;]aes-\\d+-ecb[\&#34;&#39;]|Cipher\\.getInstance\\(\\s*[\&#34;&#39;]AES/ECB&#34;, &#34;matched_text&#34;: &#34;AES.MODE_ECB&#34;, &#34;occurrence&#34;: 5, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 7.5}</td>
+                <td>Use authenticated encryption such as AES-GCM or ChaCha20-Poly1305.</td>
+                <td>CWE-327 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>17</td>
+                <td>CBC_WITHOUT_AUTH</td>
+                <td>CBC mode without visible authentication</td>
+                <td>Weak cryptographic modes</td>
+                <td><span class="pill medium">Medium</span></td>
+                <td>76%</td>
+                <td>tests\fixtures\security_checks\weak_crypto_modes_sample.py</td>
+                <td>8</td>
+                <td>27</td>
+                <td>CBC_WITHOUT_AUTH</td>
+                <td>{&#34;line_number&#34;: 8, &#34;column_number&#34;: 27, &#34;line_preview&#34;: &#34;cbc_cipher = AES.new(key, AES.MODE_CBC, iv)&#34;, &#34;context_preview&#34;: &#34;iv = b\&#34;0000000000000000\&#34;\ncipher = AES.new(key, AES.MODE_ECB)\ncbc_cipher = AES.new(key, AES.MODE_CBC, iv)\nlegacy_des = DES3.new(b\&#34;0123456789abcdef01234567\&#34;, DES3.MODE_CBC, iv)\nstream_cipher = ARC4.new(b\&#34;weak-demo-key\&#34;)&#34;, &#34;source_rule_id&#34;: &#34;CBC_WITHOUT_AUTH&#34;, &#34;rule_name&#34;: &#34;CBC mode without visible authentication&#34;, &#34;category&#34;: &#34;Weak cryptographic modes&#34;, &#34;matched_pattern&#34;: &#34;CBC_WITHOUT_AUTH&#34;, &#34;regex&#34;: &#34;AES(?:/|\\.MODE_)?CBC|MODE_CBC|[\&#34;&#39;]aes-\\d+-cbc[\&#34;&#39;]|Cipher\\.getInstance\\(\\s*[\&#34;&#39;]AES/CBC&#34;, &#34;matched_text&#34;: &#34;AES.MODE_CBC&#34;, &#34;occurrence&#34;: 6, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 5.3}</td>
+                <td>Use AES-GCM or add HMAC over IV and ciphertext with correct key separation.</td>
+                <td>CWE-353, CWE-327 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>18</td>
+                <td>WEAK_CIPHER_3DES</td>
+                <td>Triple DES cipher detected</td>
+                <td>Weak cryptographic modes</td>
+                <td><span class="pill high">High</span></td>
+                <td>94%</td>
+                <td>tests\fixtures\security_checks\weak_crypto_modes_sample.py</td>
+                <td>9</td>
+                <td>14</td>
+                <td>WEAK_CIPHER_3DES</td>
+                <td>{&#34;line_number&#34;: 9, &#34;column_number&#34;: 14, &#34;line_preview&#34;: &#34;legacy_des = DES3.new(b\&#34;0123456789abcdef01234567\&#34;, DES3.MODE_CBC, iv)&#34;, &#34;context_preview&#34;: &#34;cipher = AES.new(key, AES.MODE_ECB)\ncbc_cipher = AES.new(key, AES.MODE_CBC, iv)\nlegacy_des = DES3.new(b\&#34;0123456789abcdef01234567\&#34;, DES3.MODE_CBC, iv)\nstream_cipher = ARC4.new(b\&#34;weak-demo-key\&#34;)\nrsa_key = rsa....5537, key_size=[RED...TED]&#34;, &#34;source_rule_id&#34;: &#34;WEAK_CIPHER_3DES&#34;, &#34;rule_name&#34;: &#34;Triple DES cipher detected&#34;, &#34;category&#34;: &#34;Weak cryptographic modes&#34;, &#34;matched_pattern&#34;: &#34;WEAK_CIPHER_3DES&#34;, &#34;regex&#34;: &#34;\\b3DES\\b|DESede|TripleDES|DES-EDE|DES3&#34;, &#34;matched_text&#34;: &#34;DES3&#34;, &#34;occurrence&#34;: 7, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 7.5}</td>
+                <td>Replace 3DES with AES-GCM or ChaCha20-Poly1305.</td>
+                <td>CWE-326 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>19</td>
+                <td>CBC_WITHOUT_AUTH</td>
+                <td>CBC mode without visible authentication</td>
+                <td>Weak cryptographic modes</td>
+                <td><span class="pill medium">Medium</span></td>
+                <td>76%</td>
+                <td>tests\fixtures\security_checks\weak_crypto_modes_sample.py</td>
+                <td>9</td>
+                <td>57</td>
+                <td>CBC_WITHOUT_AUTH</td>
+                <td>{&#34;line_number&#34;: 9, &#34;column_number&#34;: 57, &#34;line_preview&#34;: &#34;legacy_des = DES3.new(b\&#34;0123456789abcdef01234567\&#34;, DES3.MODE_CBC, iv)&#34;, &#34;context_preview&#34;: &#34;cipher = AES.new(key, AES.MODE_ECB)\ncbc_cipher = AES.new(key, AES.MODE_CBC, iv)\nlegacy_des = DES3.new(b\&#34;0123456789abcdef01234567\&#34;, DES3.MODE_CBC, iv)\nstream_cipher = ARC4.new(b\&#34;weak-demo-key\&#34;)\nrsa_key = rsa....5537, key_size=[RED...TED]&#34;, &#34;source_rule_id&#34;: &#34;CBC_WITHOUT_AUTH&#34;, &#34;rule_name&#34;: &#34;CBC mode without visible authentication&#34;, &#34;category&#34;: &#34;Weak cryptographic modes&#34;, &#34;matched_pattern&#34;: &#34;CBC_WITHOUT_AUTH&#34;, &#34;regex&#34;: &#34;AES(?:/|\\.MODE_)?CBC|MODE_CBC|[\&#34;&#39;]aes-\\d+-cbc[\&#34;&#39;]|Cipher\\.getInstance\\(\\s*[\&#34;&#39;]AES/CBC&#34;, &#34;matched_text&#34;: &#34;MODE_CBC&#34;, &#34;occurrence&#34;: 8, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 5.3}</td>
+                <td>Use AES-GCM or add HMAC over IV and ciphertext with correct key separation.</td>
+                <td>CWE-353, CWE-327 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>20</td>
+                <td>WEAK_CIPHER_RC4</td>
+                <td>RC4 cipher detected</td>
+                <td>Weak cryptographic modes</td>
+                <td><span class="pill high">High</span></td>
+                <td>95%</td>
+                <td>tests\fixtures\security_checks\weak_crypto_modes_sample.py</td>
+                <td>10</td>
+                <td>17</td>
+                <td>WEAK_CIPHER_RC4</td>
+                <td>{&#34;line_number&#34;: 10, &#34;column_number&#34;: 17, &#34;line_preview&#34;: &#34;stream_cipher = ARC4.new(b\&#34;weak-demo-key\&#34;)&#34;, &#34;context_preview&#34;: &#34;cbc_cipher = AES.new(key, AES.MODE_CBC, iv)\nlegacy_des = DES3.new(b\&#34;0123456789abcdef01234567\&#34;, DES3.MODE_CBC, iv)\nstream_cipher = ARC4.new(b\&#34;weak-demo-key\&#34;)\nrsa_key = rsa....5537, key_size=[RED...TED]\n&#34;, &#34;source_rule_id&#34;: &#34;WEAK_CIPHER_RC4&#34;, &#34;rule_name&#34;: &#34;RC4 cipher detected&#34;, &#34;category&#34;: &#34;Weak cryptographic modes&#34;, &#34;matched_pattern&#34;: &#34;WEAK_CIPHER_RC4&#34;, &#34;regex&#34;: &#34;\\bRC4\\b|ARC4|Cipher\\.getInstance\\(\\s*[\&#34;&#39;]RC4&#34;, &#34;matched_text&#34;: &#34;ARC4&#34;, &#34;occurrence&#34;: 9, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 7.5}</td>
+                <td>Disable RC4 and use modern AEAD ciphers.</td>
+                <td>CWE-327 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>21</td>
+                <td>SMALL_RSA_KEY</td>
+                <td>Weak RSA key size detected</td>
+                <td>Weak cryptographic modes</td>
+                <td><span class="pill high">High</span></td>
+                <td>96%</td>
+                <td>tests\fixtures\security_checks\weak_crypto_modes_sample.py</td>
+                <td>11</td>
+                <td>1</td>
+                <td>SMALL_RSA_KEY</td>
+                <td>{&#34;line_number&#34;: 11, &#34;column_number&#34;: 1, &#34;line_preview&#34;: &#34;rsa_key = rsa....5537, key_size=[RED...TED]&#34;, &#34;context_preview&#34;: &#34;legacy_des = DES3.new(b\&#34;0123456789abcdef01234567\&#34;, DES3.MODE_CBC, iv)\nstream_cipher = ARC4.new(b\&#34;weak-demo-key\&#34;)\nrsa_key = rsa....5537, key_size=[RED...TED]\n&#34;, &#34;source_rule_id&#34;: &#34;SMALL_RSA_KEY&#34;, &#34;rule_name&#34;: &#34;Weak RSA key size detected&#34;, &#34;category&#34;: &#34;Weak cryptographic modes&#34;, &#34;matched_pattern&#34;: &#34;SMALL_RSA_KEY&#34;, &#34;regex&#34;: &#34;RSA.*?(?:keysize|key_size|bits)\\s*[:=]\\s*(\\d+)|RSA\\.generate\\(\\s*(?:bits\\s*=\\s*)?(\\d+)|generate_private_key.*?key_size\\s*=\\s*(\\d+)&#34;, &#34;matched_text&#34;: &#34;rsa_key = rsa....5537, key_size=[RED...TED]&#34;, &#34;occurrence&#34;: 10, &#34;occurrence_count&#34;: 1, &#34;suppressed_count&#34;: 0, &#34;rule_pack&#34;: &#34;crypto_rules.yml&#34;, &#34;cvss&#34;: 7.5}</td>
+                <td>Use RSA keys of at least 2048 bits or modern elliptic curve keys.</td>
+                <td>CWE-326 / A02 Cryptographic Failures</td>
+            </tr>
+        
+            <tr>
+                <td>22</td>
+                <td>WEAK_TLS_VERSION</td>
+                <td>Deprecated TLS Protocol Supported</td>
+                <td>TLS misconfiguration</td>
+                <td><span class="pill high">High</span></td>
+                <td>80%</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Disable TLS 1.0/1.1 and enable TLS 1.2+ (PCI DSS 3.2 requirement).</td>
+                <td>Not Applicable</td>
+            </tr>
+        
+            <tr>
+                <td>23</td>
+                <td>NO_FORWARD_SECRECY</td>
+                <td>Forward Secrecy Not Supported</td>
+                <td>TLS misconfiguration</td>
+                <td><span class="pill medium">Medium</span></td>
+                <td>80%</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Configure server to prefer ECDHE cipher suites for forward secrecy.</td>
+                <td>Not Applicable</td>
+            </tr>
+        
+            <tr>
+                <td>24</td>
+                <td>NO_HSTS</td>
+                <td>HTTP Strict Transport Security Not Enabled</td>
+                <td>TLS misconfiguration</td>
+                <td><span class="pill low">Low</span></td>
+                <td>80%</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Add Strict-Transport-Security header with max-age=31536000; includeSubDomains.</td>
+                <td>Not Applicable</td>
+            </tr>
+        
+            <tr>
+                <td>25</td>
+                <td>WEAK_CIPHER_SUITE</td>
+                <td>Weak Cipher Suites Enabled</td>
+                <td>TLS misconfiguration</td>
+                <td><span class="pill high">High</span></td>
+                <td>80%</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Disable NULL, EXPORT, RC4, DES, 3DES, anonymous, and non-forward-secret suites. Prefer TLS 1.3 or ECDHE AES-GCM/ChaCha20 suites.</td>
+                <td>Not Applicable</td>
+            </tr>
+        
+            <tr>
+                <td>26</td>
+                <td></td>
+                <td>Missing X-Content-Type-Options</td>
+                <td>Missing secure headers</td>
+                <td><span class="pill low">Low</span></td>
+                <td>88%</td>
+                <td>https://demo.local/login</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>{&#34;category&#34;: &#34;Missing secure headers&#34;, &#34;header&#34;: &#34;x-content-type-options&#34;, &#34;present&#34;: false, &#34;url&#34;: &#34;https://demo.local/login&#34;}</td>
+                <td>Set X-Content-Type-Options: nosniff on all dynamic responses and downloads.</td>
+                <td>CWE-693 / A05 Security Misconfiguration</td>
+            </tr>
+        
+            <tr>
+                <td>27</td>
+                <td></td>
+                <td>Missing Referrer-Policy</td>
+                <td>Missing secure headers</td>
+                <td><span class="pill low">Low</span></td>
+                <td>88%</td>
+                <td>https://demo.local/login</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>{&#34;category&#34;: &#34;Missing secure headers&#34;, &#34;header&#34;: &#34;referrer-policy&#34;, &#34;present&#34;: false, &#34;url&#34;: &#34;https://demo.local/login&#34;}</td>
+                <td>Set a privacy-preserving Referrer-Policy such as strict-origin-when-cross-origin or no-referrer.</td>
+                <td>CWE-693 / A05 Security Misconfiguration</td>
+            </tr>
+        
+            <tr>
+                <td>28</td>
+                <td></td>
+                <td>Missing Permissions-Policy</td>
+                <td>Missing secure headers</td>
+                <td><span class="pill low">Low</span></td>
+                <td>88%</td>
+                <td>https://demo.local/login</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>{&#34;category&#34;: &#34;Missing secure headers&#34;, &#34;header&#34;: &#34;permissions-policy&#34;, &#34;present&#34;: false, &#34;url&#34;: &#34;https://demo.local/login&#34;}</td>
+                <td>Disable browser features that the application does not need.</td>
+                <td>CWE-693 / A05 Security Misconfiguration</td>
+            </tr>
+        
+            <tr>
+                <td>29</td>
+                <td></td>
+                <td>Missing Cross-Origin-Embedder-Policy</td>
+                <td>Missing secure headers</td>
+                <td><span class="pill low">Low</span></td>
+                <td>88%</td>
+                <td>https://demo.local/login</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>{&#34;category&#34;: &#34;Missing secure headers&#34;, &#34;header&#34;: &#34;cross-origin-embedder-policy&#34;, &#34;present&#34;: false, &#34;url&#34;: &#34;https://demo.local/login&#34;}</td>
+                <td>Set Cross-Origin-Embedder-Policy where cross-origin isolation is required.</td>
+                <td>CWE-693 / A05 Security Misconfiguration</td>
+            </tr>
+        
+            <tr>
+                <td>30</td>
+                <td></td>
+                <td>Missing Cross-Origin-Resource-Policy</td>
+                <td>Missing secure headers</td>
+                <td><span class="pill low">Low</span></td>
+                <td>88%</td>
+                <td>https://demo.local/login</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>{&#34;category&#34;: &#34;Missing secure headers&#34;, &#34;header&#34;: &#34;cross-origin-resource-policy&#34;, &#34;present&#34;: false, &#34;url&#34;: &#34;https://demo.local/login&#34;}</td>
+                <td>Set Cross-Origin-Resource-Policy to same-origin or same-site for sensitive resources.</td>
+                <td>CWE-693 / A05 Security Misconfiguration</td>
+            </tr>
+        
+            <tr>
+                <td>31</td>
+                <td></td>
+                <td>Missing Cross-Origin-Opener-Policy</td>
+                <td>Missing secure headers</td>
+                <td><span class="pill low">Low</span></td>
+                <td>88%</td>
+                <td>https://demo.local/login</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>{&#34;category&#34;: &#34;Missing secure headers&#34;, &#34;header&#34;: &#34;cross-origin-opener-policy&#34;, &#34;present&#34;: false, &#34;url&#34;: &#34;https://demo.local/login&#34;}</td>
+                <td>Set Cross-Origin-Opener-Policy: same-origin for pages that should isolate browsing contexts.</td>
+                <td>CWE-693 / A05 Security Misconfiguration</td>
+            </tr>
+        
+            <tr>
+                <td>32</td>
+                <td></td>
+                <td>Weak Content-Security-Policy</td>
+                <td>Missing secure headers</td>
+                <td><span class="pill medium">Medium</span></td>
+                <td>88%</td>
+                <td>https://demo.local/login</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>{&#34;category&#34;: &#34;Missing secure headers&#34;, &#34;header&#34;: &#34;content-security-policy&#34;, &#34;weak_tokens&#34;: &#34;[REDACTED]&#34;, &#34;value&#34;: &#34;default-src * &#39;unsafe-inline&#39; &#39;unsafe-eval&#39;&#34;}</td>
+                <td>Remove unsafe-inline, unsafe-eval, and broad wildcards unless a documented exception is required.</td>
+                <td>CWE-693 / A05 Security Misconfiguration</td>
+            </tr>
+        
+            <tr>
+                <td>33</td>
+                <td></td>
+                <td>HSTS max-age Too Low</td>
+                <td>Missing secure headers</td>
+                <td><span class="pill low">Low</span></td>
+                <td>88%</td>
+                <td>https://demo.local/login</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>{&#34;category&#34;: &#34;Missing secure headers&#34;, &#34;header&#34;: &#34;strict-transport-security&#34;, &#34;max_age&#34;: 300, &#34;value&#34;: &#34;max-age=300&#34;}</td>
+                <td>Increase HSTS max-age to at least 31536000 seconds.</td>
+                <td>CWE-693 / A05 Security Misconfiguration</td>
+            </tr>
+        
+            <tr>
+                <td>34</td>
+                <td></td>
+                <td>Invalid X-Frame-Options Value</td>
+                <td>Missing secure headers</td>
+                <td><span class="pill low">Low</span></td>
+                <td>88%</td>
+                <td>https://demo.local/login</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>{&#34;category&#34;: &#34;Missing secure headers&#34;, &#34;header&#34;: &#34;x-frame-options&#34;, &#34;value&#34;: &#34;ALLOWALL&#34;}</td>
+                <td>Use DENY or SAMEORIGIN, or move framing policy to CSP frame-ancestors.</td>
+                <td>CWE-693 / A05 Security Misconfiguration</td>
+            </tr>
+        
+            <tr>
+                <td>35</td>
+                <td></td>
+                <td>Cache-Control Weak on Sensitive Page</td>
+                <td>Missing secure headers</td>
+                <td><span class="pill medium">Medium</span></td>
+                <td>88%</td>
+                <td>https://demo.local/login</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>Not Applicable</td>
+                <td>{&#34;category&#34;: &#34;Missing secure headers&#34;, &#34;header&#34;: &#34;cache-control&#34;, &#34;value&#34;: &#34;private&#34;, &#34;url&#34;: &#34;https://demo.local/login&#34;}</td>
+                <td>Set Cache-Control: no-store for authenticated, token, account, admin, and payment pages.</td>
+                <td>CWE-693 / A05 Security Misconfiguration</td>
+            </tr>
+        
+        </tbody>
+    </table>
+    
+</section>
+
+
+<section class="section">
+    <h2>Threat Intelligence and Attack Story</h2>
+    <div class="finding">
+        <h3>Operational Narrative</h3>
+        <p>No narrative available.</p>
+    </div>
+    
+    <div class="finding">
+        <h3>hashlib.md5() used</h3>
+        <p>hashlib.md5() used. Use SHA-256, SHA-3, or a password-specific KDF for password storage.</p>
+    </div>
+    
+    <div class="finding">
+        <h3>CRC32 used in security-sensitive logic</h3>
+        <p>CRC32 used in security-sensitive logic. Use a cryptographic hash or MAC for integrity, token, or signature decisions.</p>
+    </div>
+    
+    <div class="finding">
+        <h3>AWS access key ID detected</h3>
+        <p>AWS access key ID detected. Remove the key, rotate it in AWS IAM, and inject credentials from a managed secret store.</p>
+    </div>
+    
+    <div class="finding">
+        <h3>JWT secret detected</h3>
+        <p>JWT secret detected. Move JWT signing secrets to a secret manager and rotate tokens after replacement.</p>
+    </div>
+    
+    <div class="finding">
+        <h3>Database URL with credentials detected</h3>
+        <p>Database URL with credentials detected. Move database credentials to secret storage and rotate exposed passwords.</p>
+    </div>
+    
+</section>
+
+
+<section class="section">
+    <h2>Compliance Mapping</h2>
+    <p class="muted">Each finding should be reviewed against OWASP Top 10, OWASP ASVS, NIST, CWE, CVE/CVSS, MITRE ATT&amp;CK, and CIS Controls where relevant.</p>
+    <p><span class="pill low">Pass</span> <span class="pill high">Warning</span> <span class="pill critical">Fail</span></p>
+    
+    <p>No structured compliance checks were generated for this scan.</p>
+    
+</section>
+
+
+
+
+
+<section class="section">
+    <h2>Recommendations and Mitigation Plan</h2>
+    
+        
+        <div class="finding">
+            <h3>hashlib.md5() used - Medium</h3>
+            <p>Use SHA-256, SHA-3, or a password-specific KDF for password storage.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>CRC32 used in security-sensitive logic - Medium</h3>
+            <p>Use a cryptographic hash or MAC for integrity, token, or signature decisions.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>AWS access key ID detected - Critical</h3>
+            <p>Remove the key, rotate it in AWS IAM, and inject credentials from a managed secret store.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>JWT secret detected - Critical</h3>
+            <p>Move JWT signing secrets to a secret manager and rotate tokens after replacement.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Database URL with credentials detected - Critical</h3>
+            <p>Move database credentials to secret storage and rotate exposed passwords.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>GCP private key ID detected - High</h3>
+            <p>Treat exposed key IDs as sensitive context and rotate related service account keys.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>JavaScript Math.random used - Medium</h3>
+            <p>Use Web Crypto getRandomValues or crypto.randomBytes.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Hardcoded AES key - High</h3>
+            <p>Generate encryption keys securely and manage them through KMS or a vault.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Static initialization vector detected - High</h3>
+            <p>Generate a unique unpredictable IV or nonce per encryption operation.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Static salt detected - Medium</h3>
+            <p>Generate a unique random salt per password hash or key derivation operation.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Weak JWT secret length - High</h3>
+            <p>Use a high-entropy JWT secret of at least 32 bytes from a secret manager.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Triple DES cipher detected - High</h3>
+            <p>Replace 3DES with AES-GCM or ChaCha20-Poly1305.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>RC4 cipher detected - High</h3>
+            <p>Disable RC4 and use modern AEAD ciphers.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Hardcoded AES key - High</h3>
+            <p>Generate encryption keys securely and manage them through KMS or a vault.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Static initialization vector detected - High</h3>
+            <p>Generate a unique unpredictable IV or nonce per encryption operation.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>AES ECB mode detected - High</h3>
+            <p>Use authenticated encryption such as AES-GCM or ChaCha20-Poly1305.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>CBC mode without visible authentication - Medium</h3>
+            <p>Use AES-GCM or add HMAC over IV and ciphertext with correct key separation.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Triple DES cipher detected - High</h3>
+            <p>Replace 3DES with AES-GCM or ChaCha20-Poly1305.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>CBC mode without visible authentication - Medium</h3>
+            <p>Use AES-GCM or add HMAC over IV and ciphertext with correct key separation.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>RC4 cipher detected - High</h3>
+            <p>Disable RC4 and use modern AEAD ciphers.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Weak RSA key size detected - High</h3>
+            <p>Use RSA keys of at least 2048 bits or modern elliptic curve keys.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Deprecated TLS Protocol Supported - High</h3>
+            <p>Disable TLS 1.0/1.1 and enable TLS 1.2+ (PCI DSS 3.2 requirement).</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Forward Secrecy Not Supported - Medium</h3>
+            <p>Configure server to prefer ECDHE cipher suites for forward secrecy.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>HTTP Strict Transport Security Not Enabled - Low</h3>
+            <p>Add Strict-Transport-Security header with max-age=31536000; includeSubDomains.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Weak Cipher Suites Enabled - High</h3>
+            <p>Disable NULL, EXPORT, RC4, DES, 3DES, anonymous, and non-forward-secret suites. Prefer TLS 1.3 or ECDHE AES-GCM/ChaCha20 suites.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Missing X-Content-Type-Options - Low</h3>
+            <p>Set X-Content-Type-Options: nosniff on all dynamic responses and downloads.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Missing Referrer-Policy - Low</h3>
+            <p>Set a privacy-preserving Referrer-Policy such as strict-origin-when-cross-origin or no-referrer.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Missing Permissions-Policy - Low</h3>
+            <p>Disable browser features that the application does not need.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Missing Cross-Origin-Embedder-Policy - Low</h3>
+            <p>Set Cross-Origin-Embedder-Policy where cross-origin isolation is required.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Missing Cross-Origin-Resource-Policy - Low</h3>
+            <p>Set Cross-Origin-Resource-Policy to same-origin or same-site for sensitive resources.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Missing Cross-Origin-Opener-Policy - Low</h3>
+            <p>Set Cross-Origin-Opener-Policy: same-origin for pages that should isolate browsing contexts.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Weak Content-Security-Policy - Medium</h3>
+            <p>Remove unsafe-inline, unsafe-eval, and broad wildcards unless a documented exception is required.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>HSTS max-age Too Low - Low</h3>
+            <p>Increase HSTS max-age to at least 31536000 seconds.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Invalid X-Frame-Options Value - Low</h3>
+            <p>Use DENY or SAMEORIGIN, or move framing policy to CSP frame-ancestors.</p>
+        </div>
+        
+    
+        
+        <div class="finding">
+            <h3>Cache-Control Weak on Sensitive Page - Medium</h3>
+            <p>Set Cache-Control: no-store for authenticated, token, account, admin, and payment pages.</p>
+        </div>
+        
+    
+    <div class="finding">
+        <h3>General Recommendations</h3>
+        <ul>
+            <li>Replace MD5/SHA-1 with SHA-256 or SHA-3</li>
+            <li>Replace DES/3DES/RC2 with AES-256-GCM</li>
+            <li>Use RSA >= 2048 bits or ECDSA >= P-256</li>
+            <li>Enable TLS 1.2+ and disable older versions</li>
+            <li>Enable HSTS with a minimum max-age of 31536000</li>
+            <li>Use certificates from trusted CAs</li>
+            <li>Use cryptographically secure random number generators</li>
+            <li>Store secrets in a managed vault, not code or config files</li>
+        </ul>
+    </div>
+</section>
+
+<footer>
+    <div>Generated by VulNexus - Cryptography and Security Weakness Scanner</div>
+    <div>Report ID 00000000-0000-0000-0000-000000000001 | 2026-07-10 05:41:44 UTC</div>
+</footer>
+</div>
+</body>
+</html>

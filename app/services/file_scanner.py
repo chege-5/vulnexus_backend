@@ -23,10 +23,20 @@ CONFIG_SUFFIXES = (".env", ".yml", ".yaml", ".json", ".toml", ".tf", ".ini", ".c
 EXCLUDED_PATH_PARTS = {"node_modules", "vendor", "dist", "build", ".git", "__pycache__"}
 EXCLUDED_SUFFIXES = (".lock", ".min.js", ".map")
 MAX_MATCHES_PER_RULE_PER_FILE = 25
-MAX_FINDINGS_PER_FILE = 100
+MAX_FINDINGS_PER_FILE = 25
 
 
 LEGACY_RULE_IDS = {
+    "SAST_PY_MD5_SHA1": "WEAK_HASH_MD5",
+    "SAST_PY_WEAK_CIPHER_DES_RC4_ECB": "WEAK_CIPHER_AES-ECB",
+    "SAST_PY_STATIC_IV_NONCE": "STATIC_IV",
+    "SAST_PY_RANDOM_TOKEN": "INSECURE_RANDOM",
+    "SAST_GENERIC_HARDCODED_SECRET": "HARDCODED_KEY",
+    "SAST_PRIVATE_KEY_BLOCK": "HARDCODED_KEY",
+    "SAST_GCP_SERVICE_ACCOUNT_KEY": "HARDCODED_KEY",
+    "SAST_AWS_ACCESS_KEY": "HARDCODED_KEY",
+    "SAST_JWT_SECRET": "HARDCODED_KEY",
+    "SAST_WEAK_RSA_KEY_SIZE": "SMALL_RSA_KEY",
     "WEAK_HASH_MD5_PY_HASHLIB": "WEAK_HASH_MD5",
     "WEAK_HASH_CRYPTOJS_MD5": "WEAK_HASH_MD5",
     "WEAK_HASH_JAVA_MD5": "WEAK_HASH_MD5",
@@ -134,12 +144,13 @@ def _find_matches(lines: list[str], file_path: str) -> list[RuleMatch]:
     lower_path = file_path.lower()
     all_matches: list[RuleMatch] = []
     seen: set[tuple[str, str, int, str]] = set()
-    occupied_spans: dict[int, list[tuple[int, int]]] = {}
     per_rule_counts: dict[str, int] = {}
     per_rule_suppressed: dict[str, int] = {}
 
     for rule in load_scanner_rules():
-        if rule.config_only and not _looks_like_config(lower_path):
+        if not _rule_applies_to_path(rule, lower_path):
+            continue
+        if rule.file_config_only and not _looks_like_config(lower_path):
             continue
         for line_number, line in enumerate(lines, 1):
             for pattern, compiled in zip(rule.regex, rule.compiled_regex):
@@ -147,18 +158,15 @@ def _find_matches(lines: list[str], file_path: str) -> list[RuleMatch]:
                     if not _match_allowed(rule, match, lines, line_number, lower_path):
                         continue
                     start, end = match.span()
-                    if _overlaps_existing(occupied_spans.get(line_number, []), start, end):
-                        continue
                     normalized = redact_text(match.group(0)).strip().lower()
-                    legacy_id = _legacy_rule_id(rule.id)
-                    dedupe_key = (legacy_id, lower_path, line_number, normalized)
+                    dedupe_id = _dedupe_group(rule, match.group(0))
+                    dedupe_key = (dedupe_id, lower_path, line_number) if (rule.dedupe_group or dedupe_id != rule.id) else (dedupe_id, lower_path, line_number, normalized)
                     if dedupe_key in seen:
                         continue
                     if per_rule_counts.get(rule.id, 0) >= MAX_MATCHES_PER_RULE_PER_FILE:
                         per_rule_suppressed[rule.id] = per_rule_suppressed.get(rule.id, 0) + 1
                         continue
                     seen.add(dedupe_key)
-                    occupied_spans.setdefault(line_number, []).append((start, end))
                     per_rule_counts[rule.id] = per_rule_counts.get(rule.id, 0) + 1
                     all_matches.append(RuleMatch(
                         rule=rule,
@@ -184,13 +192,21 @@ def _find_matches(lines: list[str], file_path: str) -> list[RuleMatch]:
         )
         for item in all_matches
     ]
-    return sorted(with_suppression, key=lambda item: (item.line_number, item.column_number, item.rule.id))
+    return sorted(with_suppression, key=lambda item: (-_severity_rank(item.rule.severity), -item.rule.confidence, -item.rule.priority, item.line_number, item.column_number, item.rule.id))
 
 
 def _match_allowed(rule: ScannerRule, match: re.Match[str], lines: list[str], line_number: int, lower_path: str) -> bool:
     context = _line_context(lines, line_number)
     if rule.id == "WEAK_HASH_CRC32_SECURITY" and not _has_security_context(context):
         return False
+    if rule.category == "Weak hashing" and any(term in context.lower() for term in NON_SECURITY_CONTEXT_TERMS):
+        return False
+    if rule.id == "SAST_JS_MATH_RANDOM_TOKEN" and not _has_security_context(context):
+        return False
+    if rule.id == "SAST_FASTAPI_INSECURE_COOKIE_FLAGS":
+        lower_line = match.group(0).lower()
+        if "secure=true" in lower_line and "httponly=true" in lower_line and "samesite=" in lower_line:
+            return False
     if rule.id == "CBC_WITHOUT_AUTH" and _has_authentication_context(_line_context(lines, line_number, radius=4)):
         return False
     if rule.numeric_group_below is not None and not _captured_number_below(match, rule.numeric_group_below):
@@ -209,7 +225,7 @@ def _make_vulnerability(
     context = _line_context(lines, match.line_number)
     confidence, label, severity = _adjust_context(rule, context, file_path.lower())
     evidence = _source_evidence(lines, match, extra={
-        "rule_id": _legacy_rule_id(rule.id),
+        "rule_id": rule.id,
         "source_rule_id": rule.id,
         "rule_name": rule.title,
         "category": rule.category,
@@ -221,10 +237,11 @@ def _make_vulnerability(
         "occurrence_count": 1,
         "suppressed_count": suppressed_by_file,
         "rule_pack": rule.pack,
-        "cvss": rule.cvss,
+        "cvss_hint": rule.cvss_hint,
+        "requires_review": rule.requires_review,
     })
     return RuleVulnerability(
-        rule_id=_legacy_rule_id(rule.id),
+        rule_id=rule.id,
         title=rule.title,
         category=rule.category,
         description=_explanation(rule),
@@ -235,6 +252,9 @@ def _make_vulnerability(
         crypto_feature=rule.crypto_feature,
         confidence=confidence,
         confidence_label=label,
+        default_severity=rule.severity,
+        cvss_hint=rule.cvss_hint,
+        requires_review=rule.requires_review,
         evidence=evidence,
         explanation=_explanation(rule),
         remediation=rule.recommendation,
@@ -261,26 +281,45 @@ def _adjust_context(rule: ScannerRule, context: str, lower_path: str) -> tuple[f
     return rule.confidence, rule.confidence_label, rule.severity
 
 
+def _rule_applies_to_path(rule: ScannerRule, lower_path: str) -> bool:
+    if "generic" in rule.languages:
+        return True
+    normalized = lower_path.replace("\\", "/")
+    suffix = Path(normalized).suffix
+    language_by_suffix = {
+        ".py": "python", ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript", ".ts": "typescript", ".tsx": "typescript",
+        ".java": "java", ".kt": "kotlin", ".php": "php", ".rb": "ruby", ".go": "go", ".c": "c", ".h": "c", ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp",
+        ".yml": "yaml", ".yaml": "yaml", ".json": "json", ".toml": "toml", ".ini": "ini", ".tf": "terraform", ".sh": "shell", ".conf": "nginx", ".env": "shell",
+    }
+    language = language_by_suffix.get(suffix)
+    return language in rule.languages or (language == "typescript" and "javascript" in rule.languages)
+
+
 def _update_features(features: CryptoFeatures, rule: ScannerRule, match_text: str) -> None:
-    legacy_id = _legacy_rule_id(rule.id)
-    if legacy_id == "WEAK_HASH_MD5":
+    feature = (rule.crypto_feature or "").upper()
+    if not feature:
+        identifier = rule.id.upper()
+        feature = next((name for name in ("MD5", "SHA1", "3DES", "DES", "RC2", "RC4", "BLOWFISH", "AES-ECB", "CBC", "RSA", "AES", "IV") if name in identifier), "")
+    if feature == "MD5":
         features.uses_md5 = True
-    elif legacy_id == "WEAK_HASH_SHA1":
+    elif feature == "SHA1":
         features.uses_sha1 = True
-    elif rule.id == "WEAK_CIPHER_DES":
+    elif feature in {"DES", "3DES"}:
         features.uses_des = True
-    elif rule.id == "WEAK_CIPHER_RC2":
+    elif feature in {"RC2", "RC4"}:
         features.uses_rc2 = True
-    elif rule.id == "WEAK_CIPHER_AES-ECB":
+    elif feature == "AES-ECB" or (feature == "ECB"):
         features.uses_ecb = True
-    elif legacy_id == "HARDCODED_KEY":
+    elif feature in {"IV", "CBC"}:
+        features.cipher_mode = feature
+    elif rule.category == "Hardcoded keys":
         features.hardcoded_key = True
-    elif legacy_id == "INSECURE_RANDOM":
+    elif rule.category == "Insecure randomness":
         features.insecure_random = True
-    elif rule.id == "SMALL_RSA_KEY":
+    elif feature == "RSA" and rule.numeric_group_below is not None:
         features.rsa_key_small = True
         features.key_size = _first_int_from_text(match_text)
-    elif rule.id == "SMALL_AES_KEY":
+    elif feature == "AES" and rule.numeric_group_below is not None:
         features.aes_key_small = True
         features.key_size = _first_int_from_text(match_text)
 
@@ -352,14 +391,39 @@ def _overlaps_existing(spans: list[tuple[int, int]], start: int, end: int) -> bo
 
 
 def _is_excluded_path(file_path: str) -> bool:
-    lower = file_path.lower()
+    lower = file_path.replace("\\", "/").lower()
     path = Path(lower)
     if lower.endswith(EXCLUDED_SUFFIXES):
         return True
     return any(part in EXCLUDED_PATH_PARTS for part in path.parts)
 
 
-def _legacy_rule_id(rule_id: str) -> str:
+def _severity_rank(severity: str) -> int:
+    return {"Critical": 5, "High": 4, "Medium": 3, "Low": 2, "Info": 1}.get(severity, 0)
+
+
+def _dedupe_group(rule: ScannerRule, match_text: str) -> str:
+    if rule.dedupe_group:
+        return rule.dedupe_group
+    lowered = match_text.lower()
+    if rule.id.startswith("WEAK_HASH_MD5") or "hashlib.md5" in lowered:
+        return "crypto:md5"
+    if rule.id.startswith("WEAK_HASH_SHA1") or "hashlib.sha1" in lowered:
+        return "crypto:sha1"
+    if "akia" in lowered:
+        return "secret:aws-access-key"
+    return rule.id
+
+
+def _legacy_rule_id(rule_id: str, match_text: str = "") -> str:
+    if rule_id == "SAST_PY_MD5_SHA1":
+        return "WEAK_HASH_SHA1" if "sha1" in match_text.lower() else "WEAK_HASH_MD5"
+    if rule_id == "SAST_PY_WEAK_CIPHER_DES_RC4_ECB":
+        lowered = match_text.lower()
+        if "des" in lowered:
+            return "WEAK_CIPHER_DES"
+        if "rc4" in lowered or "arc4" in lowered:
+            return "WEAK_CIPHER_RC2"
     return LEGACY_RULE_IDS.get(rule_id, rule_id)
 
 

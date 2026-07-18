@@ -19,6 +19,7 @@ from app.models.db_models import Scan, ScanFile, ScanStatus, ScanType, Vulnerabi
 from app.models.db_models import GitHubConnection
 from app.services.rbac import Permission, require_permission
 from app.models.pydantic_models import (
+    AIReviewStatusResponse,
     ScanUploadResponse,
     ScanURLRequest,
     ScanStatusResponse,
@@ -197,6 +198,7 @@ async def scan_url_target(
         status=ScanStatus.QUEUED.value,
         user_id=current_user.id,
         project_id=payload.project_id,
+        result_metadata={"target": normalized_target.as_metadata()},
     )
     db.add(scan)
     await db.commit()
@@ -278,6 +280,8 @@ async def scan_status(
         return ScanStatusResponse(
             scan_id=scan.id,
             status=cached_progress.get("status", scan.status),
+            ai_review_status=scan.ai_review_status,
+            ai_review_error=scan.ai_review_error,
             progress=int(cached_progress.get("progress", scan.progress) or 0),
             stage=cached_progress.get("stage"),
             message=cached_progress.get("message"),
@@ -290,6 +294,8 @@ async def scan_status(
     return ScanStatusResponse(
         scan_id=scan.id,
         status=scan.status,
+        ai_review_status=scan.ai_review_status,
+        ai_review_error=scan.ai_review_error,
         progress=scan.progress,
         stage=None,
         message=scan.error_message,
@@ -297,6 +303,31 @@ async def scan_status(
         details={},
         started_at=scan.started_at,
         finished_at=scan.finished_at,
+    )
+
+
+@router.get("/scans/{scan_id}/ai-review-status", response_model=AIReviewStatusResponse)
+@limiter.limit("30/minute")
+async def ai_review_status(
+    scan_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission(Permission.SCAN_READ)),
+):
+    result = await db.execute(select(Scan).where(Scan.id == scan_id))
+    scan = result.scalar_one_or_none()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if scan.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    metadata = scan.result_metadata or {}
+    return AIReviewStatusResponse(
+        scan_id=scan.id,
+        ai_review_status=scan.ai_review_status,
+        ai_review_error=scan.ai_review_error,
+        review=metadata.get("ai_review") if scan.ai_review_status == "completed" else None,
+        enhanced_report_ready=(metadata.get("enhanced_report") or {}).get("status") == "ready",
     )
 
 
@@ -467,13 +498,15 @@ async def scan_result(
     return ScanResultResponse(
         scan_id=scan.id,
         status=scan.status,
+        ai_review_status=scan.ai_review_status,
+        ai_review_error=scan.ai_review_error,
         overall_score=scan.overall_score,
         vulnerabilities=vuln_list,
         target=scan.target,
         type=scan.type,
         started_at=scan.started_at,
         finished_at=scan.finished_at,
-        metadata=scan.result_metadata or {},
+        metadata={key: value for key, value in (scan.result_metadata or {}).items() if not key.startswith("_")},
     )
 
 

@@ -1,0 +1,8 @@
+version: "2026.07-master"
+packs:
+  - id: crypto_audit
+    path: crypto_rules.yml
+    priority: 100
+  - id: application_security
+    path: sast_rules.yml
+    priority: 90

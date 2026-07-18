@@ -9,7 +9,7 @@ h = hashlib.md5(b"data")
 '''
     vulns, features = scan_file_content(code, "test.py")
     assert features.uses_md5
-    assert any(v.rule_id == "WEAK_HASH_MD5" for v in vulns)
+    assert any(v.rule_id == "WEAK_HASH_MD5_PY_HASHLIB" for v in vulns)
 
 
 def test_detect_sha1():
@@ -19,7 +19,7 @@ h = hashlib.sha1(b"data")
 '''
     vulns, features = scan_file_content(code, "test.py")
     assert features.uses_sha1
-    assert any(v.rule_id == "WEAK_HASH_SHA1" for v in vulns)
+    assert any(v.rule_id == "WEAK_HASH_SHA1_PY_HASHLIB" for v in vulns)
 
 
 def test_detect_des():
@@ -56,7 +56,7 @@ secret_key = "c3VwZXJzZWNyZXRrZXkxMjM0NTY="
 '''
     vulns, features = scan_file_content(code, "test.py")
     assert features.hardcoded_key
-    assert any(v.rule_id == "HARDCODED_KEY" for v in vulns)
+    assert any(v.category == "Hardcoded keys" for v in vulns)
 
 
 def test_detect_insecure_random():
@@ -66,7 +66,7 @@ nonce = random.random()
 '''
     vulns, features = scan_file_content(code, "test.py")
     assert features.insecure_random
-    assert any(v.rule_id == "INSECURE_RANDOM" for v in vulns)
+    assert any(v.category == "Insecure randomness" for v in vulns)
 
 
 def test_clean_code_no_vulns():

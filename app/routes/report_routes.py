@@ -15,7 +15,7 @@ from app.models.pydantic_models import ReportAIQuestionRequest, ReportListItem
 from app.config import settings
 from app.services.report_generator import build_report, generate_html_report, build_report_payload, export_report_document, generate_pdf_report
 from app.services.rbac import Permission, require_permission
-from app.services.audit_engine import build_ai_insight, derive_final_audit_verdict
+from app.services.audit_engine import derive_final_audit_verdict
 from app.services.intelligence.llm_engine import llm_engine
 from app.utils.logger import get_logger
 from app.utils.redaction import redact_data
@@ -206,14 +206,9 @@ async def download_report(
         known_exploit_count=known_exploit_count,
     )
 
-    ai_insight = build_ai_insight(
-        target=scan.target,
-        scan_type=scan.type,
-        overall_score=scan.overall_score or 0,
-        compliance_score=compliance_score,
-        verdict=final_audit,
-        vulnerabilities=vuln_dicts,
-    )
+    # The base report remains available immediately after scan completion.
+    # Assisted interpretation appears only after the independent AI job finishes.
+    ai_insight = (scan.result_metadata or {}).get("ai_review") if scan.ai_review_status == "completed" else None
     provider_statuses = ((scan.result_metadata or {}).get("reputation") or {}).get("provider_statuses") or []
 
     payload = build_report_payload(

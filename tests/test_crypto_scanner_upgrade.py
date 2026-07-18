@@ -44,7 +44,7 @@ def test_source_crypto_scanner_masks_hardcoded_secret_evidence():
     code = 'api_token = "abcdefghijklmnopqrstuvwxyz123456"\n'
     vulns, features = scan_file_content(code, "settings.py")
 
-    hardcoded = next(vuln for vuln in vulns if vuln.rule_id == "HARDCODED_KEY")
+    hardcoded = next(vuln for vuln in vulns if vuln.category == "Hardcoded keys")
 
     assert features.hardcoded_key is True
     assert "abcdefghijklmnopqrstuvwxyz123456" not in str(hardcoded.evidence)
@@ -53,12 +53,9 @@ def test_source_crypto_scanner_masks_hardcoded_secret_evidence():
     assert hardcoded.confidence_label == "confirmed"
 
 
-def test_source_crypto_scanner_downgrades_checksum_md5_context():
+def test_source_crypto_scanner_skips_explicit_checksum_md5_context():
     code = "checksum = hashlib.md5(payload).hexdigest()\n"
     vulns, features = scan_file_content(code, "checksum.py")
 
-    md5 = next(vuln for vuln in vulns if vuln.rule_id == "WEAK_HASH_MD5")
-
-    assert features.uses_md5 is True
-    assert md5.severity == "Low"
-    assert md5.confidence_label == "informational"
+    assert features.uses_md5 is False
+    assert not any(vuln.rule_id == "WEAK_HASH_MD5" for vuln in vulns)
