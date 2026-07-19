@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import secrets
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -54,11 +55,30 @@ async def verify_google_token(id_token: str) -> dict:
             )
 
         data = response.json()
+        if data.get("iss") not in {"https://accounts.google.com", "accounts.google.com"}:
+            logger.warning("Google OAuth token verification failed: issuer mismatch")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid Google token issuer",
+            )
         if data.get("aud") != settings.GOOGLE_CLIENT_ID:
             logger.warning("Google OAuth token verification failed: audience mismatch")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token audience mismatch",
+            )
+
+        try:
+            expires_at = int(data["exp"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Google token expiration is invalid",
+            )
+        if expires_at <= int(time.time()):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Google token has expired",
             )
 
         if data.get("email_verified") not in (True, "true", "True", "1"):
@@ -275,6 +295,7 @@ async def oauth_login_or_register(
     github_username: Optional[str] = None,
     metadata: Optional[dict] = None,
     current_user: Optional[User] = None,
+    provider_email_verified: bool = False,
 ) -> tuple[User, str]:
     result = await db.execute(
         select(OAuthAccount).where(
@@ -293,6 +314,10 @@ async def oauth_login_or_register(
         if current_user and user.id != current_user.id:
             logger.warning("OAuth link rejected: provider=%s provider_user_id=%s already linked", provider, provider_user_id)
             raise HTTPException(status_code=409, detail="This provider account is already linked to another user")
+        if not user.is_approved or user.pending_approval:
+            raise HTTPException(status_code=403, detail="Account is pending approval")
+        if provider_email_verified and user.email == email.lower():
+            user.email_verified = True
 
         oauth_account.access_token = access_token or oauth_account.access_token
         oauth_account.refresh_token = refresh_token or oauth_account.refresh_token
@@ -313,6 +338,8 @@ async def oauth_login_or_register(
 
     if target_user:
         logger.info("OAuth email match found: provider=%s user_id=%s email=%s", provider, target_user.id, target_user.email)
+        if not target_user.is_approved or target_user.pending_approval:
+            raise HTTPException(status_code=403, detail="Account is pending approval")
         existing_link_result = await db.execute(
             select(OAuthAccount).where(
                 OAuthAccount.user_id == target_user.id,
@@ -338,6 +365,8 @@ async def oauth_login_or_register(
             existing_link.expires_at = datetime.now(timezone.utc) + timedelta(days=365)
 
         target_user.avatar_url = avatar_url or target_user.avatar_url
+        if provider_email_verified and target_user.email == email.lower():
+            target_user.email_verified = True
         target_user.last_login = datetime.now(timezone.utc)
         if provider == "github" and access_token and github_username:
             await _upsert_github_connection(db, target_user.id, github_user_id=provider_user_id, github_username=github_username, access_token=access_token, metadata=metadata)
@@ -356,6 +385,7 @@ async def oauth_login_or_register(
         role="developer",
         is_approved=True,
         scan_limit=10,
+        email_verified=provider_email_verified,
         last_login=datetime.now(timezone.utc),
     )
     db.add(user)

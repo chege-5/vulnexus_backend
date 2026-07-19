@@ -1,11 +1,13 @@
 from celery import Celery
+from sqlalchemy import select
 import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
 
 from app import database
 from app.config import settings
-from app.models.db_models import Scan, ScanStatus
+from app.models.db_models import Scan, ScanStatus, User, Vulnerability
+from app.services.email import notification_email_enabled, queue_transactional_email
 from app.services.integrations.cache import cache as integration_cache
 from app.utils.cache import cache, close_redis_cache
 from app.utils.file_utils import cleanup_scan_dir
@@ -59,6 +61,7 @@ celery_app.conf.update(
     task_time_limit=settings.CELERY_TASK_TIME_LIMIT,
     broker_connection_retry_on_startup=True,
 )
+
 
 @celery_app.task(name="app.tasks.run_file_scan_task")
 def run_file_scan_task(scan_id_str: str, file_path: str):
@@ -154,6 +157,7 @@ async def _execute_or_fail(scan_id: UUID, runner) -> dict:
 
     try:
         result = await runner(scan_id)
+        await _queue_scan_lifecycle_email(scan_id, result.get("status"))
         logger.info("Scan execution complete scan_id=%s status=%s", scan_id, result.get("status"))
         return result
     except Exception as exc:
@@ -185,4 +189,30 @@ async def _execute_or_fail(scan_id: UUID, runner) -> dict:
                 })
         except Exception:
             logger.exception("Unable to finalize failed scan_id=%s", scan_id)
+        await _queue_scan_lifecycle_email(scan_id, ScanStatus.FAILED.value)
         return {"scan_id": str(scan_id), "status": ScanStatus.FAILED.value, "error_message": error_message}
+
+
+async def _queue_scan_lifecycle_email(scan_id: UUID, status: str | None) -> None:
+    if status not in {ScanStatus.COMPLETED.value, ScanStatus.FAILED.value}:
+        return
+    try:
+        async with database.async_session_maker() as db:
+            scan = await db.get(Scan, scan_id)
+            if not scan or not scan.user_id:
+                return
+            user = await db.get(User, scan.user_id)
+            if not user:
+                return
+            path = f"/dashboard/scan/results/{scan.id}" if status == ScanStatus.COMPLETED.value else f"/dashboard/scan/progress/{scan.id}"
+            event = "scan_completed" if status == ScanStatus.COMPLETED.value else "scan_failed"
+            if notification_email_enabled(user.email_preferences, event):
+                queue_transactional_email(user.email, event, {"name": user.name, "path": path})
+            if status == ScanStatus.COMPLETED.value and notification_email_enabled(user.email_preferences, "critical_finding"):
+                result = await db.execute(
+                    select(Vulnerability.id).where(Vulnerability.scan_id == scan.id, Vulnerability.severity.in_(["critical", "high"])).limit(1)
+                )
+                if result.scalar_one_or_none() is not None:
+                    queue_transactional_email(user.email, "critical_finding", {"name": user.name, "path": path})
+    except Exception:
+        logger.exception("Scan notification email queue failed scan_id=%s", scan_id)

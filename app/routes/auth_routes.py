@@ -2,6 +2,7 @@ import secrets
 import uuid
 import hashlib
 import hmac
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from urllib.parse import urlparse
@@ -30,7 +31,7 @@ from app.services.oauth import (
     disconnect_github_connection,
     list_github_branches,
 )
-from app.services.email import send_email_verification, send_password_reset_email
+from app.services.email import notification_email_enabled, queue_transactional_email, send_email_verification, send_password_reset_email
 from app.services.mfa import consume_recovery_code, generate_recovery_codes, generate_totp_secret, provisioning_uri, verify_totp
 from app.services.rbac import Permission, log_audit_event, require_permission
 from app.utils.logger import get_logger
@@ -38,11 +39,7 @@ from app.utils.logger import get_logger
 router = APIRouter()
 logger = get_logger(__name__)
 
-GOOGLE_ALLOWED_REDIRECT_URIS = {
-    "http://localhost:5173/auth/google/callback",
-    "http://127.0.0.1:5173/auth/google/callback",
-    "https://vulnexus.vercel.app/auth/google/callback",
-}
+OAUTH_ALLOWED_FLOWS = {"login", "signup", "link"}
 
 
 class RegisterRequest(BaseModel):
@@ -93,16 +90,27 @@ class ForgotPasswordRequest(BaseModel):
 
 
 class ResetPasswordRequest(BaseModel):
-    token: str
+    email: EmailStr
+    code: str = Field(pattern=r"^\d{6}$")
     new_password: str
 
 
+class VerifyResetCodeRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(pattern=r"^\d{6}$")
+
+
 class VerifyEmailRequest(BaseModel):
-    token: str
+    email: EmailStr
+    code: str = Field(pattern=r"^\d{6}$")
 
 
 class ResendVerificationRequest(BaseModel):
     email: EmailStr
+
+
+class EmailPreferencesRequest(BaseModel):
+    preferences: dict[str, bool]
 
 
 class MFAEnableRequest(BaseModel):
@@ -237,8 +245,6 @@ def _allowed_oauth_redirect_uri(provider: str, redirect_uri: str | None) -> str:
         raise HTTPException(status_code=400, detail=f"OAuth redirect URI must end with {expected_path}")
 
     allowed_redirect_uris = {configured.rstrip("/")}
-    if provider == "google":
-        allowed_redirect_uris.update(GOOGLE_ALLOWED_REDIRECT_URIS)
     if candidate.rstrip("/") in allowed_redirect_uris:
         return candidate
 
@@ -295,21 +301,24 @@ def _create_mfa_challenge(user: User) -> MFAChallengeResponse:
 
 
 def _verification_required(user: User) -> bool:
-    return settings.REQUIRE_EMAIL_VERIFICATION and user.auth_provider == "email" and not user.email_verified
+    return settings.EMAIL_ENABLED and settings.REQUIRE_EMAIL_VERIFICATION and user.auth_provider == "email" and not user.email_verified
 
 
 async def _send_verification_for_user(user: User, db) -> str:
-    token = secrets.token_urlsafe(32)
-    user.email_verification_token_hash = hash_token(token)
-    user.email_verification_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    now = datetime.now(timezone.utc)
+    last_sent = _as_aware_utc(user.email_verification_sent_at)
+    if last_sent and (now - last_sent).total_seconds() < settings.EMAIL_VERIFICATION_COOLDOWN_SECONDS:
+        return ""
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    user.email_verification_token_hash = hash_token(code)
+    user.email_verification_expires_at = now + timedelta(hours=24)
+    user.email_verification_sent_at = now
     await db.commit()
     try:
-        await send_email_verification(user.email, token)
+        await send_email_verification(user.email, code)
     except Exception:
         logger.exception("Email verification delivery failed")
-        if settings.IS_PRODUCTION:
-            raise
-    return token
+    return code
 
 
 def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
@@ -333,24 +342,59 @@ def _clear_refresh_cookie(response: Response) -> None:
     )
 
 
-def _sign_oauth_state(provider: str, flow: str, nonce: str) -> str:
-    payload = f"{provider}:{flow}:{nonce}"
+def _set_oauth_state_cookie(response: Response, state: str) -> None:
+    response.set_cookie(
+        key=settings.OAUTH_STATE_COOKIE_NAME,
+        value=hash_token(state),
+        max_age=settings.OAUTH_STATE_TTL_SECONDS,
+        httponly=True,
+        secure=settings.SESSION_COOKIE_SECURE,
+        samesite=settings.SESSION_COOKIE_SAMESITE,
+        domain=settings.SESSION_COOKIE_DOMAIN,
+        path="/api/v1/auth",
+    )
+
+
+def _clear_oauth_state_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=settings.OAUTH_STATE_COOKIE_NAME,
+        domain=settings.SESSION_COOKIE_DOMAIN,
+        path="/api/v1/auth",
+    )
+
+
+def _sign_oauth_state(provider: str, flow: str, nonce: str, issued_at: int | None = None) -> str:
+    if flow not in OAUTH_ALLOWED_FLOWS:
+        raise HTTPException(status_code=400, detail="Invalid OAuth flow")
+    issued_at = int(time.time()) if issued_at is None else issued_at
+    payload = f"{provider}:{flow}:{issued_at}:{nonce}"
     signature = hmac.new(settings.CSRF_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
     return f"{payload}:{signature}"
 
 
-def _validate_oauth_state(state: str | None, provider: str) -> str:
+def _validate_oauth_state(state: str | None, provider: str, request: Request) -> str:
     if not state:
         raise HTTPException(status_code=400, detail="OAuth state is required")
     parts = state.split(":")
-    if len(parts) != 4:
+    if len(parts) != 5:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
-    state_provider, flow, nonce, signature = parts
-    if state_provider != provider:
+    state_provider, flow, issued_at_raw, nonce, signature = parts
+    if state_provider != provider or flow not in OAUTH_ALLOWED_FLOWS:
         raise HTTPException(status_code=400, detail="OAuth provider mismatch")
-    expected = hmac.new(settings.CSRF_SECRET.encode("utf-8"), f"{state_provider}:{flow}:{nonce}".encode("utf-8"), hashlib.sha256).hexdigest()
+    try:
+        issued_at = int(issued_at_raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+    now = int(time.time())
+    if issued_at > now + 30 or now - issued_at > settings.OAUTH_STATE_TTL_SECONDS:
+        raise HTTPException(status_code=400, detail="OAuth state has expired")
+    payload = f"{state_provider}:{flow}:{issued_at}:{nonce}"
+    expected = hmac.new(settings.CSRF_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
         raise HTTPException(status_code=400, detail="Invalid OAuth state signature")
+    expected_cookie = request.cookies.get(settings.OAUTH_STATE_COOKIE_NAME)
+    if not expected_cookie or not hmac.compare_digest(expected_cookie, hash_token(state)):
+        raise HTTPException(status_code=400, detail="OAuth state does not match this browser session")
     return flow
 
 
@@ -388,7 +432,7 @@ async def register(body: RegisterRequest, response: Response, db=Depends(get_db)
         scan_limit=limit,
         is_approved=True,
         pending_approval=False,
-        email_verified=not settings.REQUIRE_EMAIL_VERIFICATION,
+        email_verified=not (settings.EMAIL_ENABLED and settings.REQUIRE_EMAIL_VERIFICATION),
     )
 
     db.add(user)
@@ -448,6 +492,8 @@ async def refresh_token(body: RefreshRequest, request: Request, response: Respon
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if _verification_required(user):
+        raise HTTPException(status_code=403, detail="Email verification is required before login")
     if not user.refresh_token or not hmac.compare_digest(user.refresh_token, hash_token(provided_refresh)):
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
@@ -514,6 +560,8 @@ async def subscribe_plan(
     current_user: User = Depends(get_current_user)
 ):
     plan = (subscription.plan or subscription.tier or "free").lower()
+    previous_plan = current_user.subscription_tier
+    previous_status = current_user.subscription_status
 
     plan_map = {
         "free": {"scan_limit": 10, "expires_in_days": None},
@@ -549,6 +597,12 @@ async def subscribe_plan(
 
     await db.commit()
     await db.refresh(current_user)
+    if (previous_plan != current_user.subscription_tier or previous_status != current_user.subscription_status) and notification_email_enabled(current_user.email_preferences, "subscription"):
+        queue_transactional_email(
+            current_user.email,
+            "subscription",
+            {"name": current_user.name, "status": current_user.subscription_status, "path": "/dashboard/billing"},
+        )
 
     return {
         "success": True,
@@ -564,20 +618,22 @@ async def subscribe_plan(
     
 @router.get("/google/start", response_model=OAuthStartResponse)
 @limiter.limit("20/hour")
-async def google_start(request: Request, flow: str = "login", redirect_uri: Optional[str] = None):
+async def google_start(request: Request, response: Response, flow: str = "login", redirect_uri: Optional[str] = None):
     _require_oauth_config("google")
     safe_redirect_uri = _allowed_oauth_redirect_uri("google", redirect_uri)
     state = _sign_oauth_state("google", flow, secrets.token_urlsafe(16))
+    _set_oauth_state_cookie(response, state)
     logger.info("Google OAuth start: flow=%s redirect_uri=%s", flow, safe_redirect_uri)
     return OAuthStartResponse(provider="google", authorization_url=build_google_auth_url(state, safe_redirect_uri), state=state)
 
 
 @router.get("/github/start", response_model=OAuthStartResponse)
 @limiter.limit("20/hour")
-async def github_start(request: Request, flow: str = "login", redirect_uri: Optional[str] = None):
+async def github_start(request: Request, response: Response, flow: str = "login", redirect_uri: Optional[str] = None):
     _require_oauth_config("github")
     safe_redirect_uri = _allowed_oauth_redirect_uri("github", redirect_uri)
     state = _sign_oauth_state("github", flow, secrets.token_urlsafe(16))
+    _set_oauth_state_cookie(response, state)
     return OAuthStartResponse(provider="github", authorization_url=build_github_auth_url(state, safe_redirect_uri), state=state)
 
 
@@ -588,7 +644,8 @@ async def google_exchange(body: OAuthRequest, request: Request, response: Respon
     if not body.code:
         logger.warning("Google OAuth exchange rejected: missing authorization code")
         raise HTTPException(status_code=400, detail="Google OAuth code is required")
-    flow = _validate_oauth_state(body.state, "google")
+    flow = _validate_oauth_state(body.state, "google", request)
+    _clear_oauth_state_cookie(response)
     safe_redirect_uri = _allowed_oauth_redirect_uri("google", body.redirect_uri)
 
     logger.info("Google OAuth exchange started: flow=%s redirect_uri=%s linking=%s", flow, safe_redirect_uri, bool(current_user))
@@ -604,6 +661,7 @@ async def google_exchange(body: OAuthRequest, request: Request, response: Respon
         access_token=user_info.get("access_token"),
         refresh_token=user_info.get("refresh_token"),
         current_user=current_user,
+        provider_email_verified=bool(user_info.get("email_verified")),
     )
     refresh = _store_refresh(user)
     await db.commit()
@@ -618,7 +676,8 @@ async def github_exchange(body: OAuthRequest, request: Request, response: Respon
     _require_oauth_config("github")
     if not body.code:
         raise HTTPException(status_code=400, detail="GitHub OAuth code is required")
-    _validate_oauth_state(body.state, "github")
+    _validate_oauth_state(body.state, "github", request)
+    _clear_oauth_state_cookie(response)
     safe_redirect_uri = _allowed_oauth_redirect_uri("github", body.redirect_uri)
 
     user_info = await exchange_github_code(body.code, safe_redirect_uri)
@@ -693,48 +752,83 @@ async def forgot_password(request: Request, body: ForgotPasswordRequest, db=Depe
     result = await db.execute(select(User).where(User.email == body.email.lower()))
     user = result.scalar_one_or_none()
     if user:
-        token = secrets.token_urlsafe(32)
-        user.password_reset_token_hash = hash_token(token)
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        user.password_reset_token_hash = hash_token(code)
         user.password_reset_expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
         await db.commit()
         try:
-            await send_password_reset_email(user.email, token)
+            await send_password_reset_email(user.email, code)
         except Exception:
             logger.exception("Password reset email delivery failed")
-    return {"message": "If the account exists, a reset token has been generated."}
+    return {"message": "If the account exists, a six-digit reset code has been sent."}
 
 
-@router.post("/reset-password")
-async def reset_password(body: ResetPasswordRequest, db=Depends(get_db)):
-    validate_password_strength(body.new_password)
-    token_hash = hash_token(body.token)
-    result = await db.execute(select(User).where(User.password_reset_token_hash == token_hash))
+@router.post("/validate-reset-code")
+@limiter.limit("10/hour")
+async def validate_reset_code(request: Request, body: VerifyResetCodeRequest, db=Depends(get_db)):
+    code_hash = hash_token(body.code)
+    result = await db.execute(
+        select(User).where(
+            User.email == body.email.lower(),
+            User.password_reset_token_hash == code_hash,
+        )
+    )
     user = result.scalar_one_or_none()
     expires_at = _as_aware_utc(user.password_reset_expires_at if user else None)
     if not user or not expires_at or expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+        raise HTTPException(status_code=400, detail="Invalid or expired reset code")
+    return {"message": "Reset code verified"}
+
+
+@router.post("/reset-password")
+@limiter.limit("10/hour")
+async def reset_password(request: Request, response: Response, body: ResetPasswordRequest, db=Depends(get_db)):
+    validate_password_strength(body.new_password)
+    code_hash = hash_token(body.code)
+    result = await db.execute(
+        select(User).where(
+            User.email == body.email.lower(),
+            User.password_reset_token_hash == code_hash,
+        )
+    )
+    user = result.scalar_one_or_none()
+    expires_at = _as_aware_utc(user.password_reset_expires_at if user else None)
+    if not user or not expires_at or expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Invalid or expired reset code")
     user.password_hash = hash_password(body.new_password)
     user.password_reset_token_hash = None
     user.password_reset_expires_at = None
-    user.refresh_token = None
+    session = _issue_session(user, response)
     await db.commit()
-    return {"message": "Password reset successfully"}
+    queue_transactional_email(user.email, "password_changed", {"name": user.name})
+    return session
 
 
 @router.post("/verify-email")
 @limiter.limit("10/hour")
-async def verify_email(request: Request, body: VerifyEmailRequest, db=Depends(get_db)):
-    token_hash = hash_token(body.token)
-    result = await db.execute(select(User).where(User.email_verification_token_hash == token_hash))
+async def verify_email(request: Request, response: Response, body: VerifyEmailRequest, db=Depends(get_db)):
+    code_hash = hash_token(body.code)
+    result = await db.execute(
+        select(User).where(
+            User.email == body.email.lower(),
+            User.email_verification_token_hash == code_hash,
+        )
+    )
     user = result.scalar_one_or_none()
     expires_at = _as_aware_utc(user.email_verification_expires_at if user else None)
     if not user or not expires_at or expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code")
     user.email_verified = True
     user.email_verification_token_hash = None
     user.email_verification_expires_at = None
+    should_send_welcome = user.welcome_email_sent_at is None
+    if should_send_welcome:
+        user.welcome_email_sent_at = datetime.now(timezone.utc)
+    session = _issue_session(user, response)
     await db.commit()
-    return {"message": "Email verified successfully"}
+    if should_send_welcome:
+        queue_transactional_email(user.email, "welcome", {"name": user.name})
+    return session
 
 
 @router.post("/resend-verification")
@@ -745,6 +839,22 @@ async def resend_verification(request: Request, body: ResendVerificationRequest,
     if user and not user.email_verified:
         await _send_verification_for_user(user, db)
     return {"message": "If verification is required, a verification email has been sent."}
+
+
+@router.get("/email-preferences")
+async def get_email_preferences(current_user: User = Depends(get_current_user)):
+    return {"preferences": current_user.email_preferences or {}}
+
+
+@router.patch("/email-preferences")
+async def update_email_preferences(body: EmailPreferencesRequest, db=Depends(get_db), current_user: User = Depends(get_current_user)):
+    allowed = {"scan_completed", "scan_failed", "critical_finding", "report_ready", "subscription", "team_invitation"}
+    current_user.email_preferences = {
+        **(current_user.email_preferences or {}),
+        **{key: bool(value) for key, value in body.preferences.items() if key in allowed},
+    }
+    await db.commit()
+    return {"preferences": current_user.email_preferences}
 
 
 @router.get("/mfa/status")

@@ -90,6 +90,8 @@ async def get_user_from_token(token: str, db: AsyncSession) -> User:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
         )
+    if settings.EMAIL_ENABLED and settings.REQUIRE_EMAIL_VERIFICATION and user.auth_provider == "email" and not user.email_verified:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Email verification is required before login")
     return user
 
 
@@ -115,6 +117,8 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if user is None:
         raise credentials_exception
+    if settings.EMAIL_ENABLED and settings.REQUIRE_EMAIL_VERIFICATION and user.auth_provider == "email" and not user.email_verified:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Email verification is required before login")
     return user
 
 
