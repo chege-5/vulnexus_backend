@@ -12,6 +12,7 @@ from app.auth import require_role
 from app.models.db_models import User, Scan, Vulnerability, Notification, ScanStatus, Severity
 from app.services.integrations import integration_manager
 from app.services.rbac import log_audit_event
+from app.services.email import notification_email_enabled, queue_transactional_email
 from app.utils.logger import get_logger
 
 router = APIRouter()
@@ -115,6 +116,8 @@ async def update_user_subscription(user_id: str, body: UserSubscriptionRequest, 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    previous_tier = user.subscription_tier
+    previous_status = user.subscription_status
     user.subscription_tier = body.subscription_tier.lower()
     user.subscription_status = body.subscription_status
     db.add(Notification(
@@ -125,6 +128,8 @@ async def update_user_subscription(user_id: str, body: UserSubscriptionRequest, 
     ))
     await log_audit_event(db, None, "admin.user.subscription", "user", user_id, body.model_dump(), request.client.host if request.client else None)
     await db.commit()
+    if (previous_tier != user.subscription_tier or previous_status != user.subscription_status) and notification_email_enabled(user.email_preferences, "subscription"):
+        queue_transactional_email(user.email, "subscription", {"name": user.name, "status": user.subscription_status, "path": "/dashboard/billing"})
     return {"message": "User subscription updated successfully"}
 
 

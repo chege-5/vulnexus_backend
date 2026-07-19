@@ -248,6 +248,8 @@ class Settings:
         self.GOOGLE_CLIENT_ID = _get_optional_str("GOOGLE_CLIENT_ID")
         self.GOOGLE_CLIENT_SECRET = _get_optional_str("GOOGLE_CLIENT_SECRET")
         self.GOOGLE_REDIRECT_URI = _get_str("GOOGLE_REDIRECT_URI", "http://localhost:5173/auth/google/callback")
+        self.OAUTH_STATE_TTL_SECONDS = max(60, _get_int("OAUTH_STATE_TTL_SECONDS", 600))
+        self.OAUTH_STATE_COOKIE_NAME = _get_str("OAUTH_STATE_COOKIE_NAME", "vulnexus_oauth_state")
 
         self.GITHUB_CLIENT_ID = _get_optional_str("GITHUB_CLIENT_ID")
         self.GITHUB_CLIENT_SECRET = _get_optional_str("GITHUB_CLIENT_SECRET")
@@ -267,13 +269,17 @@ class Settings:
             "none" if self.IS_PRODUCTION else "lax",
         ).lower()
         self.SESSION_COOKIE_DOMAIN = _get_optional_str("SESSION_COOKIE_DOMAIN")
-        self.SMTP_HOST = _get_optional_str("SMTP_HOST")
-        self.SMTP_PORT = _get_int("SMTP_PORT", 587)
-        self.SMTP_USERNAME = _get_optional_str("SMTP_USERNAME")
-        self.SMTP_PASSWORD = _get_optional_str("SMTP_PASSWORD")
-        self.SMTP_FROM_EMAIL = _get_optional_str("SMTP_FROM_EMAIL")
-        self.PASSWORD_RESET_URL = _get_optional_str("PASSWORD_RESET_URL")
-        self.EMAIL_VERIFICATION_URL = _get_optional_str("EMAIL_VERIFICATION_URL")
+        self.RESEND_API_KEY = _get_optional_str("RESEND_API_KEY")
+        self.EMAIL_ENABLED = _get_bool("EMAIL_ENABLED", False)
+        self.EMAIL_FROM_NAME = _get_str("EMAIL_FROM_NAME", "VulNexus Security Platform").strip()
+        self.EMAIL_FROM_ADDRESS = _get_optional_str("EMAIL_FROM_ADDRESS")
+        # Legacy deployments may still provide a combined RFC 5322 value. The
+        # email service extracts only its address and applies EMAIL_FROM_NAME.
+        self.EMAIL_FROM = _get_optional_str("EMAIL_FROM")
+        self.EMAIL_REPLY_TO = _get_optional_str("EMAIL_REPLY_TO")
+        self.FRONTEND_URL = _get_optional_str("FRONTEND_URL")
+        self.EMAIL_SEND_TIMEOUT_SECONDS = max(5, _get_int("EMAIL_SEND_TIMEOUT_SECONDS", 20))
+        self.EMAIL_VERIFICATION_COOLDOWN_SECONDS = max(30, _get_int("EMAIL_VERIFICATION_COOLDOWN_SECONDS", 60))
         self.REQUIRE_EMAIL_VERIFICATION = _get_bool("REQUIRE_EMAIL_VERIFICATION", self.IS_PRODUCTION)
         self.MFA_ISSUER = _get_str("MFA_ISSUER", "VulNexus")
         self.MFA_CHALLENGE_EXPIRE_MINUTES = _get_int("MFA_CHALLENGE_EXPIRE_MINUTES", 5)
@@ -285,8 +291,10 @@ class Settings:
                 raise RuntimeError("CSRF_SECRET must be a unique, high-entropy value of at least 32 characters in production")
             if not self.METRICS_TOKEN or len(self.METRICS_TOKEN) < 32:
                 raise RuntimeError("METRICS_TOKEN must be configured in production")
-            if not self.SMTP_HOST or not self.SMTP_FROM_EMAIL or not self.PASSWORD_RESET_URL or not self.EMAIL_VERIFICATION_URL:
-                raise RuntimeError("SMTP_HOST, SMTP_FROM_EMAIL, PASSWORD_RESET_URL, and EMAIL_VERIFICATION_URL must be configured in production")
+            if self.EMAIL_ENABLED and (not self.RESEND_API_KEY or not (self.EMAIL_FROM_ADDRESS or self.EMAIL_FROM) or not self.FRONTEND_URL):
+                raise RuntimeError("RESEND_API_KEY, EMAIL_FROM_ADDRESS (or legacy EMAIL_FROM), and FRONTEND_URL must be configured when email is enabled")
+            if self.EMAIL_ENABLED and not self.FRONTEND_URL.startswith("https://"):
+                raise RuntimeError("FRONTEND_URL must use HTTPS when email is enabled in production")
             if any("localhost" in origin or "127.0.0.1" in origin for origin in self.CORS_ORIGINS.split(",")):
                 raise RuntimeError("CORS_ORIGINS must not contain local development origins in production")
             if self.SESSION_COOKIE_SAMESITE not in {"lax", "strict", "none"}:

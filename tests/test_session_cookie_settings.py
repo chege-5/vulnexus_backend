@@ -15,6 +15,7 @@ def _production_environment(monkeypatch) -> None:
     monkeypatch.setenv("PASSWORD_RESET_URL", "https://app.example/reset-password")
     monkeypatch.setenv("EMAIL_VERIFICATION_URL", "https://app.example/verify-email")
     monkeypatch.setenv("CORS_ORIGINS", "https://app.example")
+    monkeypatch.setenv("EMAIL_ENABLED", "false")
 
 
 def test_production_cross_site_refresh_cookie_defaults_to_none_and_secure(monkeypatch) -> None:

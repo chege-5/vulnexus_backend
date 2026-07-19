@@ -68,17 +68,22 @@ async def auth_context(monkeypatch: pytest.MonkeyPatch):
                 await session.rollback()
                 raise
 
-    delivered_tokens: list[str] = []
+    delivered_codes: dict[str, list[str]] = {"reset": [], "verification": []}
 
-    async def fake_send_password_reset_email(recipient: str, token: str) -> None:
+    async def fake_send_password_reset_email(recipient: str, code: str) -> None:
         assert recipient == "user@example.com"
-        delivered_tokens.append(token)
+        delivered_codes["reset"].append(code)
+
+    async def fake_send_email_verification(recipient: str, code: str) -> None:
+        assert recipient == "user@example.com"
+        delivered_codes["verification"].append(code)
 
     monkeypatch.setattr(auth_routes, "send_password_reset_email", fake_send_password_reset_email)
+    monkeypatch.setattr(auth_routes, "send_email_verification", fake_send_email_verification)
     app.dependency_overrides[get_db] = override_get_db
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        yield client, sessions, delivered_tokens
+        yield client, sessions, delivered_codes
 
     app.dependency_overrides.clear()
     await engine.dispose()
@@ -86,7 +91,7 @@ async def auth_context(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.mark.asyncio
 async def test_complete_email_authentication_and_reset_flow(auth_context) -> None:
-    client, sessions, delivered_tokens = auth_context
+    client, sessions, delivered_codes = auth_context
     registration = {
         "email": "User@Example.com",
         "password": "OldPassword!42",
@@ -98,6 +103,13 @@ async def test_complete_email_authentication_and_reset_flow(auth_context) -> Non
     assert registered.status_code == 201
     assert registered.json()["user"]["email"] == "user@example.com"
     assert (await client.post("/api/v1/auth/register", json=registration)).status_code == 409
+
+    verification = await client.post(
+        "/api/v1/auth/verify-email",
+        json={"email": "user@example.com", "code": delivered_codes["verification"][-1]},
+    )
+    assert verification.status_code == 200
+    assert verification.json()["user"]["email_verified"] is True
 
     bad_password = await client.post(
         "/api/v1/auth/login",
@@ -127,31 +139,37 @@ async def test_complete_email_authentication_and_reset_flow(auth_context) -> Non
     )
     assert unknown_reset.status_code == known_reset.status_code == 200
     assert unknown_reset.json() == known_reset.json()
-    token = delivered_tokens[-1]
+    code = delivered_codes["reset"][-1]
     async with sessions() as session:
         user = (await session.execute(select(User).where(User.email == "user@example.com"))).scalar_one()
-        assert user.password_reset_token_hash == hash_token(token)
-        assert user.password_reset_token_hash != token
+        assert user.password_reset_token_hash == hash_token(code)
+        assert user.password_reset_token_hash != code
         user.password_reset_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
         await session.commit()
 
     expired = await client.post(
         "/api/v1/auth/reset-password",
-        json={"token": token, "new_password": "NewPassword!42"},
+        json={"email": "user@example.com", "code": code, "new_password": "NewPassword!42"},
     )
     assert expired.status_code == 400
 
     await client.post("/api/v1/auth/forgot-password", json={"email": "user@example.com"})
-    token = delivered_tokens[-1]
+    code = delivered_codes["reset"][-1]
+    verified_code = await client.post(
+        "/api/v1/auth/validate-reset-code",
+        json={"email": "user@example.com", "code": code},
+    )
+    assert verified_code.status_code == 200
     reset = await client.post(
         "/api/v1/auth/reset-password",
-        json={"token": token, "new_password": "NewPassword!42"},
+        json={"email": "user@example.com", "code": code, "new_password": "NewPassword!42"},
     )
     assert reset.status_code == 200
+    assert reset.json()["access_token"]
     assert (
         await client.post(
             "/api/v1/auth/reset-password",
-            json={"token": token, "new_password": "AnotherPassword!42"},
+            json={"email": "user@example.com", "code": code, "new_password": "AnotherPassword!42"},
         )
     ).status_code == 400
     assert (
