@@ -93,6 +93,13 @@ def build_email(event: str, **data: Any) -> EmailContent:
     if event == "welcome":
         html, text = _layout("Welcome to VulNexus", f"<p>Hi {name}, your account is verified and ready.</p><ol><li>Start a security scan.</li><li>Scan a URL, upload code or a ZIP, or connect GitHub.</li><li>Review findings and download a report.</li></ol>", "Start a scan", _frontend_link("/dashboard/scan/new"))
         return EmailContent("Welcome to VulNexus", html, text)
+    if event == "admin_announcement":
+        raw_title = str(data.get("title") or "VulNexus notification")
+        raw_message = str(data.get("message") or "You have a new notification from your administrator.")
+        message = escape(raw_message).replace("\n", "<br>")
+        path = str(data.get("path") or "/dashboard/notifications")
+        html, text = _layout(raw_title, f"<p style=\"margin:0\">{message}</p>", "Open notifications", _frontend_link(path), "You received this message from your VulNexus administrator.")
+        return EmailContent(f"VulNexus: {raw_title}", html, raw_message)
     labels = {
         "scan_completed": ("Scan completed", "Your security scan has completed. Review the protected results in VulNexus."),
         "scan_failed": ("Scan needs attention", "A security scan could not be completed. Open VulNexus to review the safe status details and retry if appropriate."),

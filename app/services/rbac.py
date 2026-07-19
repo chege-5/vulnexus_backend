@@ -76,23 +76,6 @@ class Permission(str, Enum):
 
 # Role definitions with their permissions
 ROLE_PERMISSIONS: dict[str, set[Permission]] = {
-    "super_admin": {
-        Permission.USER_READ, Permission.USER_CREATE, Permission.USER_UPDATE, Permission.USER_DELETE,
-        Permission.USER_APPROVE,
-        Permission.SCAN_CREATE, Permission.SCAN_READ, Permission.SCAN_UPDATE, Permission.SCAN_DELETE,
-        Permission.SCAN_VIEW_ALL,
-        Permission.VULN_READ, Permission.VULN_UPDATE, Permission.VULN_DELETE,
-        Permission.REPORT_READ, Permission.REPORT_CREATE, Permission.REPORT_DELETE,
-        Permission.DASHBOARD_READ, Permission.DASHBOARD_VIEW_ALL,
-        Permission.ADMIN_ACCESS, Permission.ADMIN_ANALYTICS, Permission.ADMIN_SETTINGS,
-        Permission.ADMIN_COMMUNICATE,
-        Permission.GITHUB_CONNECT, Permission.GITHUB_SCAN, Permission.GITHUB_SYNC,
-        Permission.RBAC_READ, Permission.RBAC_WRITE,
-        Permission.AI_QUERY,
-        Permission.COMPLIANCE_READ, Permission.COMPLIANCE_REPORT,
-        Permission.NOTIFICATION_READ, Permission.NOTIFICATION_SEND,
-        Permission.ORG_READ, Permission.ORG_WRITE,
-    },
     "admin": {
         Permission.USER_READ, Permission.USER_CREATE, Permission.USER_UPDATE,
         Permission.USER_APPROVE,
@@ -201,8 +184,8 @@ def require_any_permission(*permissions: Permission):
 
 
 async def require_admin(user: User = Depends(get_current_user)) -> User:
-    """Legacy helper - checks if user is admin or super_admin."""
-    if user.role not in ("admin", "super_admin"):
+    """Compatibility helper for the single admin role."""
+    if user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
@@ -232,3 +215,4 @@ async def log_audit_event(
         ip_address=ip_address,
     )
     db.add(log)
+    return log

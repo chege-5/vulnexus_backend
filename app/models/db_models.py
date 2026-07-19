@@ -59,7 +59,6 @@ class FindingStatus(str, enum.Enum):
 
 
 class UserRole(str, enum.Enum):
-    SUPER_ADMIN = "super_admin"
     ADMIN = "admin"
     SECURITY_ANALYST = "security_analyst"
     QA_ENGINEER = "qa_engineer"
@@ -387,6 +386,20 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
 
     user: Mapped["User | None"] = relationship()
+
+
+class AdminWorkspace(Base):
+    """Durable single-admin workspace preferences and reusable views."""
+
+    __tablename__ = "admin_workspaces"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), unique=True, index=True, nullable=False)
+    settings: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+    owner: Mapped["User"] = relationship()
 
 
 class ComplianceCheck(Base):
