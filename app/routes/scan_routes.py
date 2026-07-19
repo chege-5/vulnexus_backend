@@ -522,7 +522,7 @@ async def explain_scan_with_ai(
     scan = result.scalar_one_or_none()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
-    if scan.user_id != current_user.id and current_user.role not in {"admin", "super_admin"}:
+    if scan.user_id != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
     if scan.status != ScanStatus.COMPLETED.value:
         raise HTTPException(status_code=409, detail="AI explanation is available after scan completion")

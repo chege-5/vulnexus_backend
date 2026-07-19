@@ -193,7 +193,7 @@ async def test_complete_email_authentication_and_reset_flow(auth_context) -> Non
 
 
 @pytest.mark.asyncio
-async def test_oauth_user_and_super_admin_roles_are_schema_compatible(auth_context) -> None:
+async def test_oauth_user_and_admin_roles_are_schema_compatible(auth_context) -> None:
     client, sessions, _ = auth_context
     async with sessions() as session:
         oauth_user, oauth_token = await oauth_login_or_register(
@@ -215,7 +215,7 @@ async def test_oauth_user_and_super_admin_roles_are_schema_compatible(auth_conte
         admin = User(
             email="admin@example.com",
             password_hash=hash_password("AdminPassword!42"),
-            role="super_admin",
+            role="admin",
             name="Admin",
         )
         session.add(admin)
@@ -231,6 +231,6 @@ async def test_oauth_user_and_super_admin_roles_are_schema_compatible(auth_conte
         json={"email": "admin@example.com", "password": "AdminPassword!42"},
     )
     assert admin_login.status_code == 200
-    assert admin_login.json()["user"]["role"] == "super_admin"
+    assert admin_login.json()["user"]["role"] == "admin"
     admin_claims = jwt.decode(admin_login.json()["access_token"], settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-    assert admin_claims["role"] == "super_admin"
+    assert admin_claims["role"] == "admin"

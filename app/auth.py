@@ -137,7 +137,7 @@ async def get_current_user_optional(
 
 def require_role(required_role: str):
     async def role_dependency(current_user: User = Depends(get_current_user)):
-        if current_user.role != required_role and current_user.role not in ("admin", "super_admin"):
+        if current_user.role != required_role:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not enough permissions",

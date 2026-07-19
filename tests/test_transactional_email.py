@@ -28,6 +28,14 @@ def test_notification_preferences_default_to_opt_in_for_critical_alerts() -> Non
     assert email.notification_email_enabled({"critical_finding": True}, "critical_finding") is True
 
 
+def test_admin_announcement_template_preserves_text_and_escapes_html() -> None:
+    content = email.build_email("admin_announcement", title="Service <notice>", message="Line one\nLine two", path="/dashboard/notifications")
+    assert content.subject == "VulNexus: Service <notice>"
+    assert "Service &lt;notice&gt;" in content.html
+    assert "Line one<br>Line two" in content.html
+    assert content.text == "Line one\nLine two"
+
+
 def test_every_resend_event_uses_the_exact_branded_from_value(monkeypatch) -> None:
     sent: list[dict] = []
 
