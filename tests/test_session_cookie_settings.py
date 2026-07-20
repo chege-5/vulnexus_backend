@@ -59,3 +59,39 @@ def test_production_refuses_missing_oauth_state_secret(monkeypatch) -> None:
         assert "OAUTH_STATE_SECRET" in str(exc)
     else:
         raise AssertionError("production accepted a missing OAuth state secret")
+
+
+def test_production_refuses_missing_provider_redirect_uri(monkeypatch) -> None:
+    _production_environment(monkeypatch)
+    monkeypatch.delenv("GOOGLE_REDIRECT_URI", raising=False)
+
+    try:
+        Settings()
+    except RuntimeError as exc:
+        assert "GOOGLE_REDIRECT_URI" in str(exc)
+    else:
+        raise AssertionError("production accepted a missing Google redirect URI")
+
+
+def test_production_refuses_frontend_as_provider_callback(monkeypatch) -> None:
+    _production_environment(monkeypatch)
+    monkeypatch.setenv("GOOGLE_REDIRECT_URI", "https://app.example/api/v1/auth/google/callback")
+
+    try:
+        Settings()
+    except RuntimeError as exc:
+        assert "must not use the FRONTEND_URL hostname" in str(exc)
+    else:
+        raise AssertionError("production accepted a frontend OAuth callback")
+
+
+def test_production_requires_independent_session_and_jwt_secrets(monkeypatch) -> None:
+    _production_environment(monkeypatch)
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+
+    try:
+        Settings()
+    except RuntimeError as exc:
+        assert "JWT_SECRET" in str(exc)
+    else:
+        raise AssertionError("production accepted SECRET_KEY as a JWT_SECRET alias")

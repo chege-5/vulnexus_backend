@@ -158,9 +158,11 @@ def build_github_auth_url(state: str, redirect_uri: Optional[str] = None, scope:
     if not settings.GITHUB_CLIENT_ID:
         raise HTTPException(status_code=501, detail="GitHub authentication not configured")
 
+    selected_redirect_uri = redirect_uri or settings.GITHUB_REDIRECT_URI
+    logger.info("GitHub OAuth auth URL build: redirect_uri=%s", selected_redirect_uri)
     params = {
         "client_id": settings.GITHUB_CLIENT_ID,
-        "redirect_uri": redirect_uri or settings.GITHUB_REDIRECT_URI,
+        "redirect_uri": selected_redirect_uri,
         "response_type": "code",
         "scope": scope or settings.GITHUB_OAUTH_SCOPE,
         "state": state,
@@ -173,6 +175,8 @@ async def exchange_github_code(code: str, redirect_uri: Optional[str] = None) ->
     if not settings.GITHUB_CLIENT_ID or not settings.GITHUB_CLIENT_SECRET:
         raise HTTPException(status_code=501, detail="GitHub OAuth is not configured")
 
+    selected_redirect_uri = redirect_uri or settings.GITHUB_REDIRECT_URI
+    logger.info("GitHub OAuth code exchange started: redirect_uri=%s", selected_redirect_uri)
     async with create_async_client(timeout=20) as client:
         token_response = await request_with_retry(
             client,
@@ -182,7 +186,7 @@ async def exchange_github_code(code: str, redirect_uri: Optional[str] = None) ->
                 "client_id": settings.GITHUB_CLIENT_ID,
                 "client_secret": settings.GITHUB_CLIENT_SECRET,
                 "code": code,
-                "redirect_uri": redirect_uri or settings.GITHUB_REDIRECT_URI,
+                "redirect_uri": selected_redirect_uri,
             },
             headers={"Accept": "application/json"},
         )

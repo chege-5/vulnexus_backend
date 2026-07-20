@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -63,6 +64,24 @@ def _get_float(name: str, default: float) -> float:
         return default
 
 
+def _origin_parts(value: str, name: str):
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise RuntimeError(f"{name} must be an HTTPS origin")
+    if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+        raise RuntimeError(f"{name} must be an origin without a path, query, or fragment")
+    return parsed
+
+
+def _callback_parts(value: str, name: str, expected_path: str):
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise RuntimeError(f"{name} must be an HTTPS URL")
+    if parsed.path != expected_path or parsed.params or parsed.query or parsed.fragment:
+        raise RuntimeError(f"{name} must use the exact callback path {expected_path}")
+    return parsed
+
+
 class Settings:
     def __init__(self) -> None:
         self.ENVIRONMENT = _get_str("ENVIRONMENT", "development").strip().lower()
@@ -88,8 +107,10 @@ class Settings:
         self.CELERY_RESULT_EXPIRES_SECONDS = max(60, _get_int("CELERY_RESULT_EXPIRES_SECONDS", 86400))
         self.VULNEXUS_CELERY_WORKER = _get_bool("VULNEXUS_CELERY_WORKER", False)
         self.SECRET_KEY = _get_optional_str("SECRET_KEY")
-        self.JWT_SECRET = _get_first_optional_str(("JWT_SECRET", "SECRET_KEY"))
-        self.SESSION_SECRET = _get_first_optional_str(("SESSION_SECRET", "SECRET_KEY"))
+        # Production secrets are deliberately independent variables.  Falling
+        # back to SECRET_KEY here would make a missing Railway secret invisible.
+        self.JWT_SECRET = _get_optional_str("JWT_SECRET")
+        self.SESSION_SECRET = _get_optional_str("SESSION_SECRET")
         self.OAUTH_STATE_SECRET = _get_optional_str("OAUTH_STATE_SECRET")
         self.ALGORITHM = _get_str("ALGORITHM", "HS256")
 
@@ -257,13 +278,15 @@ class Settings:
         self.GOOGLE_CLIENT_ID = _get_optional_str("GOOGLE_CLIENT_ID")
         self.GOOGLE_CLIENT_SECRET = _get_optional_str("GOOGLE_CLIENT_SECRET")
         self.BACKEND_URL = _get_optional_str("BACKEND_URL")
-        self.GOOGLE_REDIRECT_URI = _get_str("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/v1/auth/google/callback")
+        self._GOOGLE_REDIRECT_URI_CONFIGURED = _get_optional_str("GOOGLE_REDIRECT_URI")
+        self.GOOGLE_REDIRECT_URI = self._GOOGLE_REDIRECT_URI_CONFIGURED or "http://localhost:8000/api/v1/auth/google/callback"
         self.OAUTH_STATE_TTL_SECONDS = max(60, _get_int("OAUTH_STATE_TTL_SECONDS", 600))
         self.OAUTH_STATE_COOKIE_NAME = _get_str("OAUTH_STATE_COOKIE_NAME", "vulnexus_oauth_state")
 
         self.GITHUB_CLIENT_ID = _get_optional_str("GITHUB_CLIENT_ID")
         self.GITHUB_CLIENT_SECRET = _get_optional_str("GITHUB_CLIENT_SECRET")
-        self.GITHUB_REDIRECT_URI = _get_str("GITHUB_REDIRECT_URI", "http://localhost:8000/api/v1/auth/github/callback")
+        self._GITHUB_REDIRECT_URI_CONFIGURED = _get_optional_str("GITHUB_REDIRECT_URI")
+        self.GITHUB_REDIRECT_URI = self._GITHUB_REDIRECT_URI_CONFIGURED or "http://localhost:8000/api/v1/auth/github/callback"
         self.GITHUB_OAUTH_SCOPE = _get_str("GITHUB_OAUTH_SCOPE", "read:user user:email")
         self.GITHUB_INTEGRATION_SCOPE = _get_str("GITHUB_INTEGRATION_SCOPE", "read:user user:email repo")
 
@@ -305,12 +328,20 @@ class Settings:
                     raise RuntimeError(f"{name} must be a unique, high-entropy value of at least 32 characters in production")
             if not self.FRONTEND_URL or not self.BACKEND_URL:
                 raise RuntimeError("FRONTEND_URL and BACKEND_URL must be configured in production")
-            if not self.FRONTEND_URL.startswith("https://") or not self.BACKEND_URL.startswith("https://"):
-                raise RuntimeError("FRONTEND_URL and BACKEND_URL must use HTTPS in production")
-            expected_google_callback = f"{self.BACKEND_URL.rstrip('/')}/api/v1/auth/google/callback"
-            expected_github_callback = f"{self.BACKEND_URL.rstrip('/')}/api/v1/auth/github/callback"
-            if self.GOOGLE_REDIRECT_URI != expected_google_callback or self.GITHUB_REDIRECT_URI != expected_github_callback:
-                raise RuntimeError("OAuth redirect URIs must be the exact BACKEND_URL /api/v1/auth/{provider}/callback URLs")
+            frontend = _origin_parts(self.FRONTEND_URL, "FRONTEND_URL")
+            backend = _origin_parts(self.BACKEND_URL, "BACKEND_URL")
+            for provider, redirect_uri, configured_redirect_uri, callback_path in (
+                ("GOOGLE", self.GOOGLE_REDIRECT_URI, self._GOOGLE_REDIRECT_URI_CONFIGURED, "/api/v1/auth/google/callback"),
+                ("GITHUB", self.GITHUB_REDIRECT_URI, self._GITHUB_REDIRECT_URI_CONFIGURED, "/api/v1/auth/github/callback"),
+            ):
+                variable = f"{provider}_REDIRECT_URI"
+                if not configured_redirect_uri:
+                    raise RuntimeError(f"{variable} must be configured in production")
+                callback = _callback_parts(redirect_uri, variable, callback_path)
+                if callback.hostname == frontend.hostname:
+                    raise RuntimeError(f"{variable} must not use the FRONTEND_URL hostname")
+                if callback.hostname != backend.hostname or callback.port != backend.port:
+                    raise RuntimeError(f"{variable} host must match BACKEND_URL")
             if not self.METRICS_TOKEN or len(self.METRICS_TOKEN) < 32:
                 raise RuntimeError("METRICS_TOKEN must be configured in production")
             if self.EMAIL_ENABLED and (not self.RESEND_API_KEY or not (self.EMAIL_FROM_ADDRESS or self.EMAIL_FROM) or not self.FRONTEND_URL):
@@ -331,6 +362,22 @@ class Settings:
         self.OAUTH_STATE_SECRET = self.OAUTH_STATE_SECRET or self.CSRF_SECRET or "development-only-not-for-deployment"
         self.CSRF_SECRET = self.CSRF_SECRET or "development-only-not-for-deployment"
 
+    def safe_oauth_diagnostics(self) -> dict[str, object]:
+        """Safe, credential-free OAuth configuration for logs and admins."""
+        return {
+            "environment": self.ENVIRONMENT,
+            "frontend_origin": self.FRONTEND_URL,
+            "backend_origin": self.BACKEND_URL,
+            "google_redirect_uri": self.GOOGLE_REDIRECT_URI,
+            "github_redirect_uri": self.GITHUB_REDIRECT_URI,
+            "google_callback_host_and_path": _safe_callback_host_path(self.GOOGLE_REDIRECT_URI),
+            "github_callback_host_and_path": _safe_callback_host_path(self.GITHUB_REDIRECT_URI),
+            "redis_state_storage_enabled": bool(self.REDIS_URL),
+            "session_secret_configured": bool(self.SESSION_SECRET),
+            "oauth_state_secret_configured": bool(self.OAUTH_STATE_SECRET),
+            "jwt_secret_configured": bool(self.JWT_SECRET),
+        }
+
     @staticmethod
     def _normalize_database_url(database_url: str) -> str:
         if database_url.startswith("postgresql://"):
@@ -341,6 +388,11 @@ class Settings:
             "DATABASE_URL must use postgresql+asyncpg:// "
             "(postgresql:// is normalized automatically)"
         )
+
+
+def _safe_callback_host_path(redirect_uri: str) -> str:
+    parsed = urlparse(redirect_uri)
+    return f"{parsed.netloc}{parsed.path}"
 
 
 settings = Settings()

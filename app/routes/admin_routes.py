@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import require_role
 from app.deps import get_db
 from app.models.db_models import AdminWorkspace, AuditLog, FindingComment, FindingHistory, FindingStatus, Notification, Scan, ScanFile, ScanStatus, ScanType, Severity, User, Vulnerability
+from app.config import settings
 from app.services.email import queue_transactional_email
 from app.services.integrations import integration_manager
 from app.services.rbac import log_audit_event
@@ -41,6 +42,12 @@ DEFAULT_WORKSPACE_SETTINGS = {
         {"id": "scan-reliability", "name": "Scan reliability", "type": "medium", "title": "Scan service update", "message": "We are monitoring scan reliability and will share another update when service is stable."},
     ],
 }
+
+
+@router.get("/admin/auth-config", dependencies=[admin_dependency])
+async def auth_config_diagnostics():
+    """Return only non-secret OAuth configuration to authenticated admins."""
+    return settings.safe_oauth_diagnostics()
 
 
 class UserApprovalRequest(BaseModel):

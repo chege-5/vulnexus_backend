@@ -49,7 +49,14 @@ async def lifespan(app: FastAPI):
     await init_db()
     if settings.ENABLE_PROVIDER_HEALTHCHECKS:
         await integration_manager.initialize()
-    logger.info("VulNexus backend starting up")
+    oauth_diagnostics = settings.safe_oauth_diagnostics()
+    logger.info(
+        "VulNexus backend starting up: environment=%s frontend_origin=%s backend_origin=%s "
+        "google_callback=%s github_callback=%s redis_state_storage_enabled=%s",
+        oauth_diagnostics["environment"], oauth_diagnostics["frontend_origin"], oauth_diagnostics["backend_origin"],
+        oauth_diagnostics["google_callback_host_and_path"], oauth_diagnostics["github_callback_host_and_path"],
+        oauth_diagnostics["redis_state_storage_enabled"],
+    )
     yield
     await close_db()
     logger.info("VulNexus backend shutting down")

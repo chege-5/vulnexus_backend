@@ -589,7 +589,12 @@ async def _oauth_login_redirect(provider: str, request: Request, db: AsyncSessio
             settings.GITHUB_INTEGRATION_SCOPE if flow == "link" else settings.GITHUB_OAUTH_SCOPE,
         )
     )
-    logger.info("OAuth authorization started: provider=%s flow=%s link=%s", provider, flow, bool(link_user_id))
+    # The callback URL is deliberately safe to log.  It is the configured
+    # backend endpoint, not a token, authorization code, cookie, or state.
+    logger.info(
+        "OAuth authorization started: provider=%s flow=%s link=%s redirect_uri=%s",
+        provider, flow, bool(link_user_id), redirect_uri,
+    )
     return RedirectResponse(authorization_url, status_code=status.HTTP_302_FOUND)
 
 
