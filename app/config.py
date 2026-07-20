@@ -85,8 +85,12 @@ class Settings:
             self.CELERY_TASK_SOFT_TIME_LIMIT + 1,
             _get_int("CELERY_TASK_TIME_LIMIT", 210),
         )
+        self.CELERY_RESULT_EXPIRES_SECONDS = max(60, _get_int("CELERY_RESULT_EXPIRES_SECONDS", 86400))
         self.VULNEXUS_CELERY_WORKER = _get_bool("VULNEXUS_CELERY_WORKER", False)
         self.SECRET_KEY = _get_optional_str("SECRET_KEY")
+        self.JWT_SECRET = _get_first_optional_str(("JWT_SECRET", "SECRET_KEY"))
+        self.SESSION_SECRET = _get_first_optional_str(("SESSION_SECRET", "SECRET_KEY"))
+        self.OAUTH_STATE_SECRET = _get_optional_str("OAUTH_STATE_SECRET")
         self.ALGORITHM = _get_str("ALGORITHM", "HS256")
 
         self.ACCESS_TOKEN_EXPIRE_MINUTES = _get_int("ACCESS_TOKEN_EXPIRE_MINUTES", 60)
@@ -220,6 +224,11 @@ class Settings:
         self.OPENROUTER_API_KEY = _get_optional_str("OPENROUTER_API_KEY")
         self.OPENROUTER_MODEL = _get_str("OPENROUTER_MODEL", "openai/gpt-oss-120b")
         self.OPENROUTER_TIMEOUT_SECONDS = _get_float("OPENROUTER_TIMEOUT_SECONDS", 35.0)
+        # The review worker is deliberately bounded independently of individual
+        # provider requests.  A provider outage must never hold a scan hostage.
+        self.AI_REVIEW_MAX_FINDINGS = max(1, _get_int("AI_REVIEW_MAX_FINDINGS", 10))
+        self.AI_REVIEW_TOTAL_TIMEOUT_SECONDS = max(5, _get_float("AI_REVIEW_TOTAL_TIMEOUT_SECONDS", 120.0))
+        self.AI_MAX_PROMPT_CHARS = max(1000, _get_int("AI_MAX_PROMPT_CHARS", 50000))
 
         self.REPORT_RENDERER = _get_str("REPORT_RENDERER", "playwright")
         self.PLAYWRIGHT_BROWSER_PATH = _get_optional_str("PLAYWRIGHT_BROWSER_PATH")
@@ -247,14 +256,16 @@ class Settings:
 
         self.GOOGLE_CLIENT_ID = _get_optional_str("GOOGLE_CLIENT_ID")
         self.GOOGLE_CLIENT_SECRET = _get_optional_str("GOOGLE_CLIENT_SECRET")
-        self.GOOGLE_REDIRECT_URI = _get_str("GOOGLE_REDIRECT_URI", "http://localhost:5173/auth/google/callback")
+        self.BACKEND_URL = _get_optional_str("BACKEND_URL")
+        self.GOOGLE_REDIRECT_URI = _get_str("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/v1/auth/google/callback")
         self.OAUTH_STATE_TTL_SECONDS = max(60, _get_int("OAUTH_STATE_TTL_SECONDS", 600))
         self.OAUTH_STATE_COOKIE_NAME = _get_str("OAUTH_STATE_COOKIE_NAME", "vulnexus_oauth_state")
 
         self.GITHUB_CLIENT_ID = _get_optional_str("GITHUB_CLIENT_ID")
         self.GITHUB_CLIENT_SECRET = _get_optional_str("GITHUB_CLIENT_SECRET")
-        self.GITHUB_REDIRECT_URI = _get_str("GITHUB_REDIRECT_URI", "http://localhost:5173/auth/github/callback")
-        self.GITHUB_OAUTH_SCOPE = _get_str("GITHUB_OAUTH_SCOPE", "read:user user:email repo")
+        self.GITHUB_REDIRECT_URI = _get_str("GITHUB_REDIRECT_URI", "http://localhost:8000/api/v1/auth/github/callback")
+        self.GITHUB_OAUTH_SCOPE = _get_str("GITHUB_OAUTH_SCOPE", "read:user user:email")
+        self.GITHUB_INTEGRATION_SCOPE = _get_str("GITHUB_INTEGRATION_SCOPE", "read:user user:email repo")
 
         self.CSRF_SECRET = _get_optional_str("CSRF_SECRET")
         self.ENCRYPTION_KEY = _get_optional_str("ENCRYPTION_KEY")
@@ -289,6 +300,17 @@ class Settings:
                 raise RuntimeError("SECRET_KEY must be a unique, high-entropy value of at least 32 characters in production")
             if not self.CSRF_SECRET or len(self.CSRF_SECRET) < 32 or self.CSRF_SECRET.startswith(("dev-", "change-me")):
                 raise RuntimeError("CSRF_SECRET must be a unique, high-entropy value of at least 32 characters in production")
+            for name, value in (("JWT_SECRET", self.JWT_SECRET), ("SESSION_SECRET", self.SESSION_SECRET), ("OAUTH_STATE_SECRET", self.OAUTH_STATE_SECRET)):
+                if not value or len(value) < 32 or value.startswith(("dev-", "change-me", "replace-")):
+                    raise RuntimeError(f"{name} must be a unique, high-entropy value of at least 32 characters in production")
+            if not self.FRONTEND_URL or not self.BACKEND_URL:
+                raise RuntimeError("FRONTEND_URL and BACKEND_URL must be configured in production")
+            if not self.FRONTEND_URL.startswith("https://") or not self.BACKEND_URL.startswith("https://"):
+                raise RuntimeError("FRONTEND_URL and BACKEND_URL must use HTTPS in production")
+            expected_google_callback = f"{self.BACKEND_URL.rstrip('/')}/api/v1/auth/google/callback"
+            expected_github_callback = f"{self.BACKEND_URL.rstrip('/')}/api/v1/auth/github/callback"
+            if self.GOOGLE_REDIRECT_URI != expected_google_callback or self.GITHUB_REDIRECT_URI != expected_github_callback:
+                raise RuntimeError("OAuth redirect URIs must be the exact BACKEND_URL /api/v1/auth/{provider}/callback URLs")
             if not self.METRICS_TOKEN or len(self.METRICS_TOKEN) < 32:
                 raise RuntimeError("METRICS_TOKEN must be configured in production")
             if self.EMAIL_ENABLED and (not self.RESEND_API_KEY or not (self.EMAIL_FROM_ADDRESS or self.EMAIL_FROM) or not self.FRONTEND_URL):
@@ -304,6 +326,9 @@ class Settings:
 
         # Development remains usable without a committed secret. Production never does.
         self.SECRET_KEY = self.SECRET_KEY or "development-only-not-for-deployment"
+        self.JWT_SECRET = self.JWT_SECRET or self.SECRET_KEY
+        self.SESSION_SECRET = self.SESSION_SECRET or self.SECRET_KEY
+        self.OAUTH_STATE_SECRET = self.OAUTH_STATE_SECRET or self.CSRF_SECRET or "development-only-not-for-deployment"
         self.CSRF_SECRET = self.CSRF_SECRET or "development-only-not-for-deployment"
 
     @staticmethod

@@ -1,16 +1,15 @@
 import secrets
 import uuid
-import hashlib
 import hmac
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
-from urllib.parse import urlparse
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 from jose import JWTError, jwt
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +17,7 @@ from app.auth import hash_password, verify_password, create_access_token, create
 from app.config import settings
 from app.deps import get_db
 from app.rate_limit import limiter
-from app.models.db_models import User, Notification, GitHubConnection
+from app.models.db_models import AuthSession, User, Notification, GitHubConnection
 from app.services.oauth import (
     build_google_auth_url,
     build_github_auth_url,
@@ -34,6 +33,7 @@ from app.services.oauth import (
 from app.services.email import notification_email_enabled, queue_transactional_email, send_email_verification, send_password_reset_email
 from app.services.mfa import consume_recovery_code, generate_recovery_codes, generate_totp_secret, provisioning_uri, verify_totp
 from app.services.rbac import Permission, log_audit_event, require_permission
+from app.services.oauth_transactions import create_oauth_transaction, consume_oauth_transaction, pkce_challenge
 from app.utils.logger import get_logger
 
 router = APIRouter()
@@ -230,36 +230,6 @@ def _require_oauth_config(provider: str) -> None:
         raise HTTPException(status_code=501, detail="GitHub OAuth is not configured")
 
 
-def _allowed_oauth_redirect_uri(provider: str, redirect_uri: str | None) -> str:
-    configured = settings.GOOGLE_REDIRECT_URI if provider == "google" else settings.GITHUB_REDIRECT_URI
-    candidate = (redirect_uri or configured).strip()
-    parsed = urlparse(candidate)
-
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        logger.warning("OAuth redirect rejected for %s: invalid URI", provider)
-        raise HTTPException(status_code=400, detail="Invalid OAuth redirect URI")
-
-    expected_path = f"/auth/{provider}/callback"
-    if parsed.path != expected_path:
-        logger.warning("OAuth redirect rejected for %s: path %s does not match %s", provider, parsed.path, expected_path)
-        raise HTTPException(status_code=400, detail=f"OAuth redirect URI must end with {expected_path}")
-
-    allowed_redirect_uris = {configured.rstrip("/")}
-    if candidate.rstrip("/") in allowed_redirect_uris:
-        return candidate
-
-    configured_origin = f"{urlparse(configured).scheme}://{urlparse(configured).netloc}"
-    allowed_origins = {origin.strip().rstrip("/") for origin in settings.CORS_ORIGINS.split(",") if origin.strip()}
-    allowed_origins.add(configured_origin.rstrip("/"))
-    candidate_origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
-
-    if candidate_origin not in allowed_origins:
-        logger.warning("OAuth redirect rejected for %s: origin %s is not allowed", provider, candidate_origin)
-        raise HTTPException(status_code=400, detail="OAuth redirect origin is not allowed")
-
-    return candidate
-
-
 def _as_aware_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -277,15 +247,27 @@ async def _decrypt_access_token(encrypted_token: str) -> str:
         return encrypted_token
 
 
-def _store_refresh(user: User) -> str:
-    refresh = create_refresh_token({"sub": str(user.id)})
+async def _store_refresh(user: User, db: AsyncSession, *, family_id: str | None = None, replaced_session: AuthSession | None = None) -> str:
+    session_id = str(uuid.uuid4())
+    family_id = family_id or uuid.uuid4().hex
+    refresh = create_refresh_token({"sub": str(user.id), "sid": session_id, "family": family_id})
     user.refresh_token = hash_token(refresh)
+    session = AuthSession(
+        id=uuid.UUID(session_id), user_id=user.id, family_id=family_id,
+        token_hash=hash_token(refresh),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+    db.add(session)
+    await db.flush()
+    if replaced_session:
+        replaced_session.revoked_at = datetime.now(timezone.utc)
+        replaced_session.replaced_by_id = session.id
     return refresh
 
 
-def _issue_session(user: User, response: Response) -> TokenResponse:
+async def _issue_session(user: User, response: Response, db: AsyncSession) -> TokenResponse:
     token = create_access_token({"sub": str(user.id), "role": user.role})
-    refresh = _store_refresh(user)
+    refresh = await _store_refresh(user, db)
     _set_refresh_cookie(response, refresh)
     return TokenResponse(access_token=token, user=_session_info(user))
 
@@ -321,6 +303,17 @@ async def _send_verification_for_user(user: User, db) -> str:
     return code
 
 
+async def _send_welcome_email_if_needed(user: User, db) -> bool:
+    """Record a welcome email only after Resend accepts it, allowing a later login to retry."""
+    if user.welcome_email_sent_at is not None:
+        return False
+    if not queue_transactional_email(user.email, "welcome", {"name": user.name}):
+        return False
+    user.welcome_email_sent_at = datetime.now(timezone.utc)
+    await db.commit()
+    return True
+
+
 def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
     response.set_cookie(
         key=settings.SESSION_COOKIE_NAME,
@@ -330,7 +323,7 @@ def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
         secure=settings.SESSION_COOKIE_SECURE,
         samesite=settings.SESSION_COOKIE_SAMESITE,
         domain=settings.SESSION_COOKIE_DOMAIN,
-        path="/api/v1/auth",
+        path="/",
     )
 
 
@@ -338,64 +331,28 @@ def _clear_refresh_cookie(response: Response) -> None:
     response.delete_cookie(
         key=settings.SESSION_COOKIE_NAME,
         domain=settings.SESSION_COOKIE_DOMAIN,
-        path="/api/v1/auth",
+        path="/",
     )
 
 
-def _set_oauth_state_cookie(response: Response, state: str) -> None:
-    response.set_cookie(
-        key=settings.OAUTH_STATE_COOKIE_NAME,
-        value=hash_token(state),
-        max_age=settings.OAUTH_STATE_TTL_SECONDS,
-        httponly=True,
-        secure=settings.SESSION_COOKIE_SECURE,
-        samesite=settings.SESSION_COOKIE_SAMESITE,
-        domain=settings.SESSION_COOKIE_DOMAIN,
-        path="/api/v1/auth",
-    )
-
-
-def _clear_oauth_state_cookie(response: Response) -> None:
-    response.delete_cookie(
-        key=settings.OAUTH_STATE_COOKIE_NAME,
-        domain=settings.SESSION_COOKIE_DOMAIN,
-        path="/api/v1/auth",
-    )
-
-
-def _sign_oauth_state(provider: str, flow: str, nonce: str, issued_at: int | None = None) -> str:
-    if flow not in OAUTH_ALLOWED_FLOWS:
-        raise HTTPException(status_code=400, detail="Invalid OAuth flow")
-    issued_at = int(time.time()) if issued_at is None else issued_at
-    payload = f"{provider}:{flow}:{issued_at}:{nonce}"
-    signature = hmac.new(settings.CSRF_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"{payload}:{signature}"
-
-
-def _validate_oauth_state(state: str | None, provider: str, request: Request) -> str:
-    if not state:
-        raise HTTPException(status_code=400, detail="OAuth state is required")
-    parts = state.split(":")
-    if len(parts) != 5:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state")
-    state_provider, flow, issued_at_raw, nonce, signature = parts
-    if state_provider != provider or flow not in OAUTH_ALLOWED_FLOWS:
-        raise HTTPException(status_code=400, detail="OAuth provider mismatch")
+async def _user_from_refresh_cookie(request: Request, db: AsyncSession) -> User | None:
+    token = request.cookies.get(settings.SESSION_COOKIE_NAME)
+    if not token:
+        return None
     try:
-        issued_at = int(issued_at_raw)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state")
-    now = int(time.time())
-    if issued_at > now + 30 or now - issued_at > settings.OAUTH_STATE_TTL_SECONDS:
-        raise HTTPException(status_code=400, detail="OAuth state has expired")
-    payload = f"{state_provider}:{flow}:{issued_at}:{nonce}"
-    expected = hmac.new(settings.CSRF_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
-        raise HTTPException(status_code=400, detail="Invalid OAuth state signature")
-    expected_cookie = request.cookies.get(settings.OAUTH_STATE_COOKIE_NAME)
-    if not expected_cookie or not hmac.compare_digest(expected_cookie, hash_token(state)):
-        raise HTTPException(status_code=400, detail="OAuth state does not match this browser session")
-    return flow
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.ALGORITHM])
+        if payload.get("type") != "refresh":
+            return None
+        user_id = uuid.UUID(payload["sub"])
+        session_id = uuid.UUID(payload["sid"])
+    except (JWTError, ValueError, KeyError, TypeError):
+        return None
+    result = await db.execute(select(AuthSession).where(AuthSession.id == session_id, AuthSession.token_hash == hash_token(token)))
+    auth_session = result.scalar_one_or_none()
+    if not auth_session or auth_session.revoked_at or _as_aware_utc(auth_session.expires_at) < datetime.now(timezone.utc):
+        return None
+    result = await db.execute(select(User).where(User.id == user_id))
+    return result.scalar_one_or_none()
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -445,7 +402,7 @@ async def register(body: RegisterRequest, response: Response, db=Depends(get_db)
 
     if not user.email_verified:
         await _send_verification_for_user(user, db)
-    session = _issue_session(user, response)
+    session = await _issue_session(user, response, db)
     await db.commit()
     return session
 
@@ -466,8 +423,9 @@ async def login(body: LoginRequest, response: Response, db=Depends(get_db)):
         return challenge
 
     user.last_login = datetime.now(timezone.utc)
-    session = _issue_session(user, response)
+    session = await _issue_session(user, response, db)
     await db.commit()
+    await _send_welcome_email_if_needed(user, db)
     return session
 
 
@@ -478,7 +436,7 @@ async def refresh_token(body: RefreshRequest, request: Request, response: Respon
     if not provided_refresh:
         raise HTTPException(status_code=401, detail="Refresh session is required")
     try:
-        payload = jwt.decode(provided_refresh, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = jwt.decode(provided_refresh, settings.JWT_SECRET, algorithms=[settings.ALGORITHM])
         if payload.get("type") != "refresh":
             raise HTTPException(status_code=401, detail="Invalid refresh token")
         user_id = payload.get("sub")
@@ -494,11 +452,36 @@ async def refresh_token(body: RefreshRequest, request: Request, response: Respon
         raise HTTPException(status_code=401, detail="User not found")
     if _verification_required(user):
         raise HTTPException(status_code=403, detail="Email verification is required before login")
-    if not user.refresh_token or not hmac.compare_digest(user.refresh_token, hash_token(provided_refresh)):
+    session_id = payload.get("sid")
+    if not session_id:
+        # One release of legacy tokens may be refreshed once; every successor is tracked per-session.
+        if not user.refresh_token or not hmac.compare_digest(user.refresh_token, hash_token(provided_refresh)):
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+        auth_session = None
+    else:
+        try:
+            parsed_session_id = uuid.UUID(session_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+        result = await db.execute(select(AuthSession).where(AuthSession.id == parsed_session_id, AuthSession.token_hash == hash_token(provided_refresh)))
+        auth_session = result.scalar_one_or_none()
+        if not auth_session:
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+        if auth_session.revoked_at:
+            await db.execute(update(AuthSession).where(AuthSession.family_id == auth_session.family_id, AuthSession.revoked_at.is_(None)).values(revoked_at=datetime.now(timezone.utc)))
+            await db.commit()
+            _clear_refresh_cookie(response)
+            logger.warning("Refresh token reuse detected: user_id=%s family_id=%s", user.id, auth_session.family_id)
+            raise HTTPException(status_code=401, detail="Refresh session has been revoked")
+        if _as_aware_utc(auth_session.expires_at) < datetime.now(timezone.utc):
+            auth_session.revoked_at = datetime.now(timezone.utc)
+            await db.commit()
+            raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    if not auth_session and (not user.refresh_token or not hmac.compare_digest(user.refresh_token, hash_token(provided_refresh))):
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     new_token = create_access_token({"sub": str(user.id), "role": user.role})
-    new_refresh = _store_refresh(user)
+    new_refresh = await _store_refresh(user, db, family_id=auth_session.family_id if auth_session else None, replaced_session=auth_session)
     await db.commit()
     _set_refresh_cookie(response, new_refresh)
     return TokenResponse(access_token=new_token, user=_session_info(user))
@@ -506,51 +489,14 @@ async def refresh_token(body: RefreshRequest, request: Request, response: Respon
 
 @router.post("/google", response_model=TokenResponse)
 async def google_auth(body: OAuthRequest, response: Response, db=Depends(get_db)):
-    """Authenticate with Google ID token."""
-    _require_oauth_config("google")
-    
-    if not body.id_token:
-        raise HTTPException(status_code=400, detail="Google ID token is required")
-
-    user_info = await verify_google_token(body.id_token)
-    user, token = await oauth_login_or_register(
-        db=db,
-        provider="google",
-        provider_user_id=user_info["provider_user_id"],
-        email=user_info["email"],
-        name=user_info["name"],
-        avatar_url=user_info["avatar_url"],
-    )
-    refresh = _store_refresh(user)
-    await db.commit()
-    _set_refresh_cookie(response, refresh)
-    return TokenResponse(access_token=token, user=_session_info(user))
+    """Retired: provider credentials and authorization codes never enter the frontend."""
+    raise HTTPException(status_code=410, detail="Use /auth/google/login for the server-side OAuth flow")
 
 
 @router.post("/github", response_model=TokenResponse)
 async def github_auth(body: OAuthRequest, response: Response, db=Depends(get_db)):
-    """Authenticate with GitHub OAuth code."""
-    _require_oauth_config("github")
-    
-    if not body.code:
-        raise HTTPException(status_code=400, detail="GitHub OAuth code is required")
-
-    user_info = await exchange_github_code(body.code)
-    user, token = await oauth_login_or_register(
-        db=db,
-        provider="github",
-        provider_user_id=user_info["provider_user_id"],
-        email=user_info["email"],
-        name=user_info["name"],
-        avatar_url=user_info["avatar_url"],
-        access_token=user_info.get("access_token"),
-        github_username=user_info.get("github_username"),
-        metadata=user_info.get("metadata"),
-    )
-    refresh = _store_refresh(user)
-    await db.commit()
-    _set_refresh_cookie(response, refresh)
-    return TokenResponse(access_token=token, user=_session_info(user))
+    """Retired: provider credentials and authorization codes never enter the frontend."""
+    raise HTTPException(status_code=410, detail="Use /auth/github/login for the server-side OAuth flow")
 
 @router.post("/subscribe")
 @router.post("/subscribe-plan")
@@ -616,87 +562,97 @@ async def subscribe_plan(
     }
     
     
-@router.get("/google/start", response_model=OAuthStartResponse)
-@limiter.limit("20/hour")
-async def google_start(request: Request, response: Response, flow: str = "login", redirect_uri: Optional[str] = None):
-    _require_oauth_config("google")
-    safe_redirect_uri = _allowed_oauth_redirect_uri("google", redirect_uri)
-    state = _sign_oauth_state("google", flow, secrets.token_urlsafe(16))
-    _set_oauth_state_cookie(response, state)
-    logger.info("Google OAuth start: flow=%s redirect_uri=%s", flow, safe_redirect_uri)
-    return OAuthStartResponse(provider="google", authorization_url=build_google_auth_url(state, safe_redirect_uri), state=state)
+def _frontend_oauth_redirect(provider: str, outcome: str, reason: str | None = None) -> RedirectResponse:
+    frontend = settings.FRONTEND_URL or next((origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()), "http://localhost:5173")
+    query = {"oauth": outcome, "provider": provider}
+    if reason:
+        query["reason"] = reason
+    return RedirectResponse(f"{frontend.rstrip('/')}/auth/callback?{urlencode(query)}", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.get("/github/start", response_model=OAuthStartResponse)
-@limiter.limit("20/hour")
-async def github_start(request: Request, response: Response, flow: str = "login", redirect_uri: Optional[str] = None):
-    _require_oauth_config("github")
-    safe_redirect_uri = _allowed_oauth_redirect_uri("github", redirect_uri)
-    state = _sign_oauth_state("github", flow, secrets.token_urlsafe(16))
-    _set_oauth_state_cookie(response, state)
-    return OAuthStartResponse(provider="github", authorization_url=build_github_auth_url(state, safe_redirect_uri), state=state)
-
-
-@router.post("/google/exchange", response_model=TokenResponse)
-@limiter.limit("20/hour")
-async def google_exchange(body: OAuthRequest, request: Request, response: Response, db=Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
-    _require_oauth_config("google")
-    if not body.code:
-        logger.warning("Google OAuth exchange rejected: missing authorization code")
-        raise HTTPException(status_code=400, detail="Google OAuth code is required")
-    flow = _validate_oauth_state(body.state, "google", request)
-    _clear_oauth_state_cookie(response)
-    safe_redirect_uri = _allowed_oauth_redirect_uri("google", body.redirect_uri)
-
-    logger.info("Google OAuth exchange started: flow=%s redirect_uri=%s linking=%s", flow, safe_redirect_uri, bool(current_user))
-    user_info = await exchange_google_code(body.code, safe_redirect_uri)
-    logger.info("Google OAuth profile verified: email=%s provider_user_id=%s", user_info["email"], user_info["provider_user_id"])
-    user, token = await oauth_login_or_register(
-        db=db,
-        provider="google",
-        provider_user_id=user_info["provider_user_id"],
-        email=user_info["email"],
-        name=user_info["name"],
-        avatar_url=user_info["avatar_url"],
-        access_token=user_info.get("access_token"),
-        refresh_token=user_info.get("refresh_token"),
-        current_user=current_user,
-        provider_email_verified=bool(user_info.get("email_verified")),
+async def _oauth_login_redirect(provider: str, request: Request, db: AsyncSession, flow: str) -> RedirectResponse:
+    if flow not in OAUTH_ALLOWED_FLOWS:
+        raise HTTPException(status_code=400, detail="Invalid OAuth flow")
+    _require_oauth_config(provider)
+    link_user_id = None
+    if flow == "link":
+        current_user = await _user_from_refresh_cookie(request, db)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Sign in before linking an OAuth account")
+        link_user_id = str(current_user.id)
+    state, verifier = await create_oauth_transaction(provider, flow, link_user_id=link_user_id)
+    redirect_uri = settings.GOOGLE_REDIRECT_URI if provider == "google" else settings.GITHUB_REDIRECT_URI
+    authorization_url = (
+        build_google_auth_url(state, redirect_uri, pkce_challenge(verifier))
+        if provider == "google" else build_github_auth_url(
+            state, redirect_uri,
+            settings.GITHUB_INTEGRATION_SCOPE if flow == "link" else settings.GITHUB_OAUTH_SCOPE,
+        )
     )
-    refresh = _store_refresh(user)
-    await db.commit()
-    logger.info("Google OAuth session issued: user_id=%s email=%s", user.id, user.email)
-    _set_refresh_cookie(response, refresh)
-    return TokenResponse(access_token=token, user=_session_info(user))
+    logger.info("OAuth authorization started: provider=%s flow=%s link=%s", provider, flow, bool(link_user_id))
+    return RedirectResponse(authorization_url, status_code=status.HTTP_302_FOUND)
 
 
-@router.post("/github/exchange", response_model=TokenResponse)
+@router.get("/google/login")
 @limiter.limit("20/hour")
-async def github_exchange(body: OAuthRequest, request: Request, response: Response, db=Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
-    _require_oauth_config("github")
-    if not body.code:
-        raise HTTPException(status_code=400, detail="GitHub OAuth code is required")
-    _validate_oauth_state(body.state, "github", request)
-    _clear_oauth_state_cookie(response)
-    safe_redirect_uri = _allowed_oauth_redirect_uri("github", body.redirect_uri)
+async def google_login(request: Request, db=Depends(get_db), flow: str = "login"):
+    return await _oauth_login_redirect("google", request, db, flow)
 
-    user_info = await exchange_github_code(body.code, safe_redirect_uri)
-    user, token = await oauth_login_or_register(
-        db=db,
-        provider="github",
-        provider_user_id=user_info["provider_user_id"],
-        email=user_info["email"],
-        name=user_info["name"],
-        avatar_url=user_info["avatar_url"],
-        access_token=user_info.get("access_token"),
-        github_username=user_info.get("github_username"),
-        metadata=user_info.get("metadata"),
-        current_user=current_user,
-    )
-    refresh = _store_refresh(user)
-    await db.commit()
-    _set_refresh_cookie(response, refresh)
-    return TokenResponse(access_token=token, user=_session_info(user))
+
+@router.get("/github/login")
+@limiter.limit("20/hour")
+async def github_login(request: Request, db=Depends(get_db), flow: str = "login"):
+    return await _oauth_login_redirect("github", request, db, flow)
+
+
+async def _oauth_callback(provider: str, code: str | None, state: str | None, provider_error: str | None, db: AsyncSession) -> RedirectResponse:
+    if provider_error:
+        logger.info("OAuth provider cancelled or denied authorization: provider=%s", provider)
+        return _frontend_oauth_redirect(provider, "error", "provider_denied")
+    if not code:
+        return _frontend_oauth_redirect(provider, "error", "missing_code")
+    try:
+        transaction = await consume_oauth_transaction(provider, state)
+        if provider == "google":
+            identity = await exchange_google_code(code, settings.GOOGLE_REDIRECT_URI, transaction["pkce_verifier"])
+        else:
+            identity = await exchange_github_code(code, settings.GITHUB_REDIRECT_URI)
+        link_user = None
+        if transaction.get("link_user_id"):
+            result = await db.execute(select(User).where(User.id == uuid.UUID(transaction["link_user_id"])))
+            link_user = result.scalar_one_or_none()
+            if not link_user:
+                raise HTTPException(status_code=401, detail="The linking session is no longer valid")
+        user, _ = await oauth_login_or_register(
+            db=db, provider=provider, provider_user_id=identity["provider_user_id"], email=identity["email"],
+            name=identity["name"], avatar_url=identity["avatar_url"], access_token=identity.get("access_token"),
+            refresh_token=identity.get("refresh_token"), github_username=identity.get("github_username"),
+            metadata=identity.get("metadata"), current_user=link_user,
+            provider_email_verified=bool(identity.get("email_verified")),
+        )
+        response = _frontend_oauth_redirect(provider, "success")
+        await _issue_session(user, response, db)
+        await db.commit()
+        logger.info("OAuth callback completed: provider=%s user_id=%s flow=%s", provider, user.id, transaction["flow"])
+        return response
+    except HTTPException as exc:
+        logger.warning("OAuth callback rejected: provider=%s status=%s", provider, exc.status_code)
+        return _frontend_oauth_redirect(provider, "error", "state_expired" if "state" in str(exc.detail).lower() else "provider_exchange_failed")
+    except Exception:
+        logger.exception("OAuth callback failed: provider=%s", provider)
+        return _frontend_oauth_redirect(provider, "error", "unexpected")
+
+
+@router.get("/google/callback")
+@limiter.limit("20/hour")
+async def google_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None, db=Depends(get_db)):
+    return await _oauth_callback("google", code, state, error, db)
+
+
+@router.get("/github/callback")
+@limiter.limit("20/hour")
+async def github_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None, db=Depends(get_db)):
+    return await _oauth_callback("github", code, state, error, db)
 
 
 @router.get("/github/connection", response_model=GitHubConnectionResponse)
@@ -741,6 +697,7 @@ async def logout(response: Response, current_user: User = Depends(get_current_us
     user = result.scalar_one_or_none()
     if user:
         user.refresh_token = None
+        await db.execute(update(AuthSession).where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None)).values(revoked_at=datetime.now(timezone.utc)))
         await db.commit()
     _clear_refresh_cookie(response)
     return {"message": "Logged out successfully"}
@@ -798,7 +755,7 @@ async def reset_password(request: Request, response: Response, body: ResetPasswo
     user.password_hash = hash_password(body.new_password)
     user.password_reset_token_hash = None
     user.password_reset_expires_at = None
-    session = _issue_session(user, response)
+    session = await _issue_session(user, response, db)
     await db.commit()
     queue_transactional_email(user.email, "password_changed", {"name": user.name})
     return session
@@ -821,13 +778,9 @@ async def verify_email(request: Request, response: Response, body: VerifyEmailRe
     user.email_verified = True
     user.email_verification_token_hash = None
     user.email_verification_expires_at = None
-    should_send_welcome = user.welcome_email_sent_at is None
-    if should_send_welcome:
-        user.welcome_email_sent_at = datetime.now(timezone.utc)
-    session = _issue_session(user, response)
+    session = await _issue_session(user, response, db)
     await db.commit()
-    if should_send_welcome:
-        queue_transactional_email(user.email, "welcome", {"name": user.name})
+    await _send_welcome_email_if_needed(user, db)
     return session
 
 
@@ -931,7 +884,7 @@ async def mfa_verify_login(body: MFALoginVerifyRequest, request: Request, respon
     user.mfa_challenge_token_hash = None
     user.mfa_challenge_expires_at = None
     user.last_login = datetime.now(timezone.utc)
-    session = _issue_session(user, response)
+    session = await _issue_session(user, response, db)
     await db.commit()
     return session
 
@@ -985,9 +938,17 @@ async def mfa_regenerate_recovery_codes(
 
 
 @router.get("/me", response_model=UserSessionInfo)
-async def get_me(current_user: User = Depends(get_current_user)):
-    """Get current user info."""
-    return _session_info(current_user)
+async def get_me(request: Request, response: Response, db=Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
+    """Get the current user from a bearer token or the HttpOnly refresh session.
+
+    The OAuth completion page uses this route once after the backend callback;
+    it never receives or exchanges a provider authorization code.
+    """
+    user = current_user or await _user_from_refresh_cookie(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication is required")
+    response.headers["X-Access-Token"] = create_access_token({"sub": str(user.id), "role": user.role})
+    return _session_info(user)
 
 
 @router.put("/me", response_model=UserSessionInfo)

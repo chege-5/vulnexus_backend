@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import database
@@ -29,7 +29,7 @@ from app.services.scanners.dns import DNSScanner
 from app.services.scanners.github_repository import GitHubRepositoryScanner
 from app.services.scanners.headers import HeaderScanner
 from app.services.scanners.reputation import ReputationScanner
-from app.services.scanners.secrets import SecretsScanner
+from app.services.scanners.secrets import SASTScanner
 from app.services.scanners.technology import TechnologyFingerprintScanner
 from app.services.scanners.tls import TLSScanner
 from app.services.scanners.web_crawl import WebCrawlScanner
@@ -37,7 +37,7 @@ from app.utils.cache import cache
 from app.utils.crypto import decrypt_token
 from app.utils.file_utils import extract_zip
 from app.utils.logger import get_logger, timed_stage
-from app.utils.redaction import redact_text
+from app.utils.redaction import redact_data, redact_text
 
 logger = get_logger(__name__)
 
@@ -81,7 +81,7 @@ class ScanOrchestrator:
             "dns": DNSScanner(),
             "technology": TechnologyFingerprintScanner(),
             "reputation": ReputationScanner(),
-            "secrets": SecretsScanner(),
+            "sast": SASTScanner(),
             "dependency": DependencyScanner(),
             "github": GitHubRepositoryScanner(),
             "web_crawl": WebCrawlScanner(),
@@ -94,6 +94,15 @@ class ScanOrchestrator:
             scan = await self._load_scan(db, scan_id)
             if not scan:
                 raise ValueError(f"Scan {scan_id} not found")
+
+            # Late acknowledgements may redeliver an already-completed task.
+            # A retry must not rerun a terminal scan or append duplicate rows.
+            if scan.status in {ScanStatus.COMPLETED.value, ScanStatus.CANCELED.value}:
+                logger.info("Ignoring redelivered terminal scan task scan_id=%s status=%s", scan_id, scan.status)
+                return {"scan_id": str(scan.id), "status": scan.status, "idempotent": True}
+            if scan.status == ScanStatus.IN_PROGRESS.value:
+                logger.info("Ignoring concurrent scan execution scan_id=%s", scan_id)
+                return {"scan_id": str(scan.id), "status": scan.status, "idempotent": True}
 
             logger.info("Scan start scan_id=%s type=%s", scan_id, scan.type)
 
@@ -279,8 +288,16 @@ class ScanOrchestrator:
                 db.add(ScanFile(scan_id=context.scan_id, filename=Path(path).name, path=path))
                 await db.commit()
 
-        scanners = [self._scanner_instances["secrets"], self._scanner_instances["dependency"], self._scanner_instances["compliance"]]
+        scanners = [self._scanner_instances["sast"], self._scanner_instances["dependency"], self._scanner_instances["compliance"]]
         results = await self._run_scanners(scanners, context)
+        sast_result = next((result for scanner, result in zip(scanners, results) if scanner.name == "sast"), None)
+        logger.info(
+            "File SAST complete scan_id=%s files=%s findings=%s engine=%s",
+            context.scan_id,
+            len(extracted),
+            len(sast_result.findings) if sast_result else 0,
+            (sast_result.metadata or {}).get("engine") if sast_result else "unavailable",
+        )
         return [finding for result in results for finding in result.findings]
 
     async def _execute_github_pipeline(self, context: ScanContext) -> list[RawFinding]:
@@ -293,7 +310,7 @@ class ScanOrchestrator:
                 await db.commit()
 
         context = context.model_copy(update={"source_path": repository_result.metadata.get("scan_root") or context.source_path, "options": {**context.options, "source_files": source_files}})
-        scanners = [self._scanner_instances["secrets"], self._scanner_instances["dependency"], self._scanner_instances["compliance"]]
+        scanners = [self._scanner_instances["sast"], self._scanner_instances["dependency"], self._scanner_instances["compliance"]]
         results = await self._run_scanners([github_scanner, *scanners], context)
         return [finding for result in results for finding in result.findings]
 
@@ -326,6 +343,13 @@ class ScanOrchestrator:
             **(scan.result_metadata or {}),
             **(context.options.get("scan_result_metadata") or {}),
         }
+        # Delete-and-replace makes a recovery from a failed persistence attempt
+        # deterministic without changing finding IDs for a completed scan (which
+        # is never re-executed above).  The delete and replacement share one
+        # transaction, so a commit failure rolls both back.
+        await db.execute(delete(Vulnerability).where(Vulnerability.scan_id == scan.id))
+        await db.execute(delete(ComplianceCheck).where(ComplianceCheck.scan_id == scan.id))
+
         cve_entries: dict[str, CVEEntry] = {}
         known_exploit_count = 0
         vulnerability_payloads: list[dict[str, Any]] = []
@@ -420,9 +444,9 @@ class ScanOrchestrator:
             cve_count=sum(1 for item in vulnerability_payloads if item.get("cve_id")),
             known_exploit_count=known_exploit_count,
         )
-        # Build the baseline report now. It deliberately contains no provider
-        # generated explanation or AI remediation; those are added later by
-        # the dedicated AI review task.
+        # Generate one deterministic baseline.  The AI review must not render
+        # the same filename again: that previously made report contents depend
+        # on timing and silently overwrote the first artifact.
         try:
             await asyncio.to_thread(
                 build_report,
@@ -468,8 +492,16 @@ class ScanOrchestrator:
                 raise ValueError(f"Scan {scan_id} not found")
             if scan.status != ScanStatus.COMPLETED.value:
                 return {"scan_id": str(scan_id), "ai_review_status": scan.ai_review_status, "status": scan.status}
-            if scan.ai_review_status == AIReviewStatus.COMPLETED.value:
-                return {"scan_id": str(scan_id), "ai_review_status": AIReviewStatus.COMPLETED.value}
+            terminal_statuses = {
+                AIReviewStatus.COMPLETED.value,
+                AIReviewStatus.COMPLETED_AI.value,
+                AIReviewStatus.COMPLETED_FALLBACK.value,
+                AIReviewStatus.NOT_REQUIRED.value,
+                AIReviewStatus.PARTIAL.value,
+                AIReviewStatus.TIMED_OUT.value,
+            }
+            if scan.ai_review_status in terminal_statuses:
+                return {"scan_id": str(scan_id), "ai_review_status": scan.ai_review_status, "idempotent": True}
 
             scan.ai_review_status = AIReviewStatus.PROCESSING.value
             scan.ai_review_error = None
@@ -490,10 +522,30 @@ class ScanOrchestrator:
                     }
                     for item in vulnerabilities
                 ]
+                if not findings:
+                    review = await ai_explanation_service.explain_scan(
+                        target=scan.target,
+                        findings=[],
+                        score=scan.overall_score,
+                    )
+                    metadata = dict(scan.result_metadata or {})
+                    metadata["ai_review"] = review
+                    metadata["enhanced_report"] = {"status": "not_required"}
+                    scan.result_metadata = metadata
+                    scan.ai_review_status = AIReviewStatus.NOT_REQUIRED.value
+                    scan.ai_review_error = None
+                    await db.commit()
+                    return {"scan_id": str(scan_id), "ai_review_status": AIReviewStatus.NOT_REQUIRED.value, "review": review}
                 review_context = (scan.result_metadata or {}).get("_ai_review_context") or []
                 if settings.ENABLE_AI_ENRICHMENT and review_context:
                     enriched_findings = await asyncio.gather(
-                        *(knowledge_engine.enrich(CorrelatedFinding.model_validate(item), risk={"score": scan.overall_score or 0}) for item in review_context)
+                        *(
+                            knowledge_engine.enrich(
+                                CorrelatedFinding.model_validate(item),
+                                risk={"score": scan.overall_score or 0},
+                            )
+                            for item in review_context[: settings.AI_REVIEW_MAX_FINDINGS]
+                        )
                     )
                     for vulnerability, enriched_finding in zip(vulnerabilities, enriched_findings):
                         vulnerability.cve_id = enriched_finding.cve_id or vulnerability.cve_id
@@ -507,78 +559,17 @@ class ScanOrchestrator:
                     score=scan.overall_score,
                 )
 
-                cve_ids = {item.cve_id for item in vulnerabilities if item.cve_id}
-                cve_details: list[dict[str, Any]] = []
-                if cve_ids:
-                    cve_result = await db.execute(select(CVEEntry).where(CVEEntry.cve_id.in_(cve_ids)))
-                    cve_details = [
-                        {
-                            "cve_id": entry.cve_id,
-                            "summary": entry.summary,
-                            "cvss_score": entry.cvss_score,
-                            "published_date": entry.published_date.isoformat() if entry.published_date else None,
-                            "references": entry.references or [],
-                        }
-                        for entry in cve_result.scalars().all()
-                    ]
-                compliance_result = await db.execute(select(ComplianceCheck).where(ComplianceCheck.scan_id == scan.id))
-                compliance_checks = [
-                    {"standard": item.standard, "category": item.category, "result": item.result, "score": item.score, "details": item.details or {}}
-                    for item in compliance_result.scalars().all()
-                ]
-                compliance_score = self._compliance_score(compliance_checks)
-                final_verdict = derive_final_audit_verdict(
-                    overall_score=scan.overall_score or 0,
-                    compliance_score=compliance_score,
-                    critical_findings=sum(1 for item in vulnerabilities if item.severity == Severity.CRITICAL.value),
-                    high_findings=sum(1 for item in vulnerabilities if item.severity == Severity.HIGH.value),
-                    cve_count=len(cve_ids),
-                    known_exploit_count=sum(1 for item in vulnerabilities if item.known_exploit),
-                )
-                report_findings = [
-                    {
-                        "rule_id": item.rule_id,
-                        "description": item.description,
-                        "severity": item.severity,
-                        "ml_score": item.ml_score,
-                        "cve_id": item.cve_id,
-                        "cvss_score": item.cvss_score,
-                        "file_path": item.file_path,
-                        "line_number": item.line_number,
-                        "remediation": item.remediation,
-                        "cwe_ids": item.cwe_ids,
-                        "owasp_category": item.owasp_category,
-                        "nist_control": item.nist_control,
-                        "mitre_technique": item.mitre_technique,
-                        "known_exploit": item.known_exploit,
-                        "references": item.references,
-                    }
-                    for item in vulnerabilities
-                ]
-                await asyncio.to_thread(
-                    build_report,
-                    scan_id=scan.id,
-                    target=scan.target,
-                    scan_type=scan.type,
-                    overall_score=scan.overall_score or 0,
-                    vulnerabilities=report_findings,
-                    cve_details=cve_details,
-                    compliance_checks=compliance_checks,
-                    audit_verdict=final_verdict,
-                    ai_insight=review,
-                    provider_statuses=((scan.result_metadata or {}).get("reputation") or {}).get("provider_statuses") or [],
-                    started_at=scan.started_at,
-                    finished_at=scan.finished_at,
-                )
-
                 metadata = dict(scan.result_metadata or {})
                 metadata["ai_review"] = review
-                metadata["enhanced_report"] = {"status": "ready"}
+                # The deterministic report remains the single persisted
+                # artifact until report versioning/object storage is enabled.
+                metadata["enhanced_report"] = {"status": "not_generated"}
                 scan.result_metadata = metadata
-                scan.ai_review_status = AIReviewStatus.COMPLETED.value
+                review_status = review.get("status", AIReviewStatus.COMPLETED_FALLBACK.value)
+                scan.ai_review_status = review_status
                 scan.ai_review_error = None
                 await db.commit()
-                return {"scan_id": str(scan_id), "ai_review_status": AIReviewStatus.COMPLETED.value, "review": review}
+                return {"scan_id": str(scan_id), "ai_review_status": review_status, "review": review}
             except Exception as exc:
                 await db.rollback()
                 logger.exception("AI review failed scan_id=%s", scan_id)
@@ -660,6 +651,15 @@ class ScanOrchestrator:
                 "contributing_rule_ids": incident.contributing_rule_ids,
             },
         }
+        evidence = redact_data({
+            **incident.evidence,
+            "correlation_id": incident.correlation_id,
+            "contributing_rule_ids": incident.contributing_rule_ids,
+            "confidence": incident.confidence,
+            "confidence_label": incident.evidence.get("confidence_label") or "probable",
+            "category": incident.evidence.get("category") or incident.threat_category,
+            "title": incident.title,
+        })
         if diagnostics:
             compliance_results["diagnostics"] = diagnostics
 
@@ -686,6 +686,7 @@ class ScanOrchestrator:
             "file_path": file_path,
             "line_number": line_number,
             "code_snippet": code_snippet,
+            "evidence": evidence,
             "remediation": normalized_remediation,
             "cve_id": cve_id,
             "cvss_score": finding.cvss_score,

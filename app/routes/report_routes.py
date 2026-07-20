@@ -1,6 +1,7 @@
 import asyncio
 import os
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -17,7 +18,7 @@ from app.services.report_generator import build_report, generate_html_report, bu
 from app.services.rbac import Permission, require_permission
 from app.services.audit_engine import derive_final_audit_verdict
 from app.services.intelligence.llm_engine import llm_engine
-from app.services.email import notification_email_enabled, queue_transactional_email
+from app.services.email import notification_email_enabled, queue_report_ready_email
 from app.utils.logger import get_logger
 from app.utils.redaction import redact_data
 
@@ -293,8 +294,11 @@ async def download_report(
         started_at=scan.started_at,
         finished_at=scan.finished_at,
     )
-    if notification_email_enabled(current_user.email_preferences, "report_ready"):
-        queue_transactional_email(current_user.email, "report_ready", {"name": current_user.name, "path": "/dashboard/reports"})
+    if scan.report_email_sent_at is None and notification_email_enabled(current_user.email_preferences, "report_ready"):
+        delivered = await asyncio.to_thread(queue_report_ready_email, current_user.email, pdf_generated, current_user.name)
+        if delivered:
+            scan.report_email_sent_at = datetime.now(timezone.utc)
+            await db.commit()
     if pdf_generated.endswith(".html"):
         return FileResponse(pdf_generated, media_type="text/html", filename=f"vulnexus_report_{scan_id}.html")
     return FileResponse(pdf_generated, media_type="application/pdf", filename=f"vulnexus_report_{scan_id}.pdf")

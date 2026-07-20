@@ -20,7 +20,7 @@ def test_vulnerable_and_benign_sast_regression_fixtures():
     benign = (FIXTURES / "sast_regression_benign.py").read_text(encoding="utf-8")
     vulnerable_ids = _source_ids(vulnerable, "fixture.py")
     benign_ids = _source_ids(benign, "fixture.py")
-    expected = {"SAST_PY_JINJA_TEMPLATE_UNSAFE", "SAST_PY_HTTPX_VERIFY_FALSE", "SAST_PY_SSL_UNVERIFIED_CONTEXT", "WEAK_HASH_MD5_PY_HASHLIB", "SAST_PY_WEAK_CIPHER_DES_RC4_ECB", "SAST_PY_STATIC_IV_NONCE", "SAST_FASTAPI_INSECURE_COOKIE_FLAGS", "SAST_SQL_CONCAT", "SAST_PATH_TRAVERSAL"}
+    expected = {"SAST_PY_JINJA_TEMPLATE_UNSAFE", "SAST_PY_HTTPX_VERIFY_FALSE", "SAST_PY_SSL_UNVERIFIED_CONTEXT", "WEAK_HASH_MD5_PY_HASHLIB", "WEAK_CIPHER_AES-ECB", "SAST_PY_STATIC_IV_NONCE", "SAST_FASTAPI_INSECURE_COOKIE_FLAGS", "SAST_SQL_CONCAT", "SAST_PATH_TRAVERSAL"}
     assert expected.issubset(vulnerable_ids)
     assert not expected.intersection(benign_ids)
 

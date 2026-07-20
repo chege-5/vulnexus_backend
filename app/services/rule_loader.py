@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -69,7 +68,9 @@ class ScannerRule:
     requires_review: bool = False
     priority: int = 0
     dedupe_group: str | None = None
-    compiled_regex: tuple[re.Pattern[str], ...] = field(default_factory=tuple, compare=False)
+    # Kept only to preserve the existing YAML catalogue during the semantic
+    # engine migration.  These strings are never compiled or executed.
+    legacy_patterns: tuple[str, ...] = field(default_factory=tuple, compare=False)
 
 
 @dataclass(frozen=True)
@@ -191,13 +192,10 @@ def _validate_rule(raw_rule: Any, *, category_key: str, index: int, path: Path) 
     if not 0 <= cvss_hint <= 10:
         raise RuleValidationError(f"{location} cvss_hint must be between 0 and 10")
 
-    regexes = _string_tuple(raw_rule["regex"], "regex", location)
-    compiled: list[re.Pattern[str]] = []
-    for pattern in regexes:
-        try:
-            compiled.append(re.compile(pattern, re.IGNORECASE))
-        except re.error as exc:
-            raise RuleValidationError(f"{location} has invalid regex {pattern!r}: {exc}") from exc
+    # Detection is AST/token based.  Older packs have a `regex` attribute;
+    # retain it as inert migration metadata so a deployment can keep its rule
+    # identifiers and report history without executing regular expressions.
+    legacy_patterns = _string_tuple(raw_rule["regex"], "regex", location)
 
     languages = _string_tuple(raw_rule["languages"], "languages", location)
     invalid_languages = set(languages) - VALID_LANGUAGES
@@ -214,7 +212,7 @@ def _validate_rule(raw_rule: Any, *, category_key: str, index: int, path: Path) 
         confidence=confidence,
         cvss_hint=cvss_hint,
         languages=languages,
-        regex=regexes,
+            regex=legacy_patterns,
         cwe=_string_tuple(raw_rule["cwe"], "cwe", location),
         owasp=_required_str(raw_rule, "owasp", location),
         recommendation=_required_str(raw_rule, "recommendation", location),
@@ -231,7 +229,7 @@ def _validate_rule(raw_rule: Any, *, category_key: str, index: int, path: Path) 
         requires_review=bool(raw_rule.get("requires_review", False)),
         priority=_optional_int(raw_rule.get("priority", 0), location, "priority") or 0,
         dedupe_group=_optional_str(raw_rule.get("dedupe_group"), location, "dedupe_group"),
-        compiled_regex=tuple(compiled),
+        legacy_patterns=legacy_patterns,
     )
 
 

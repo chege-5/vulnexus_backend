@@ -326,7 +326,7 @@ async def ai_review_status(
         scan_id=scan.id,
         ai_review_status=scan.ai_review_status,
         ai_review_error=scan.ai_review_error,
-        review=metadata.get("ai_review") if scan.ai_review_status == "completed" else None,
+        review=metadata.get("ai_review") if scan.ai_review_status in {"completed", "completed_ai", "completed_fallback", "partial", "timed_out", "not_required"} else None,
         enhanced_report_ready=(metadata.get("enhanced_report") or {}).get("status") == "ready",
     )
 
@@ -481,6 +481,13 @@ async def scan_result(
             cve_id=v.cve_id,
             file_path=v.file_path,
             line_number=v.line_number,
+            column_number=(v.evidence or {}).get("column_number"),
+            confidence=(v.evidence or {}).get("confidence"),
+            confidence_label=(v.evidence or {}).get("confidence_label"),
+            category=(v.evidence or {}).get("category"),
+            title=(v.evidence or {}).get("title"),
+            evidence=v.evidence or {},
+            code_snippet=v.code_snippet,
             remediation=v.remediation,
             cvss_score=v.cvss_score,
             cwe_ids=v.cwe_ids,

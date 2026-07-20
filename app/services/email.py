@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from base64 import b64encode
 from email.headerregistry import Address
 from email.utils import parseaddr
 from html import escape
@@ -27,6 +28,7 @@ class EmailContent:
 
 OPTIONAL_EMAIL_EVENTS = {"scan_completed", "scan_failed", "critical_finding", "report_ready", "subscription", "team_invitation"}
 DEFAULT_FROM_NAME = "VulNexus Security Platform"
+MAX_REPORT_EMAIL_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
 
 def _frontend_link(path: str, query: dict[str, str] | None = None) -> str:
@@ -114,7 +116,12 @@ def build_email(event: str, **data: Any) -> EmailContent:
     return EmailContent(f"VulNexus: {title}", html, text)
 
 
-def _send_email_content(recipient: str, event: str, content: EmailContent) -> str | None:
+def _send_email_content(
+    recipient: str,
+    event: str,
+    content: EmailContent,
+    attachments: list[dict[str, str]] | None = None,
+) -> str | None:
     """Send already-rendered content through Resend with the canonical sender."""
     if not settings.EMAIL_ENABLED:
         logger.info("Transactional email skipped event=%s reason=disabled", event)
@@ -139,6 +146,8 @@ def _send_email_content(recipient: str, event: str, content: EmailContent) -> st
     }
     if settings.EMAIL_REPLY_TO:
         params["reply_to"] = settings.EMAIL_REPLY_TO
+    if attachments:
+        params["attachments"] = attachments
     response = resend.Emails.send(params)
     message_id = getattr(response, "id", None) or (response.get("id") if isinstance(response, dict) else None)
     logger.info("Transactional email accepted event=%s resend_message_id=%s", event, message_id or "unknown")
@@ -148,6 +157,25 @@ def _send_email_content(recipient: str, event: str, content: EmailContent) -> st
 def send_transactional_email(recipient: str, event: str, payload: dict[str, Any]) -> str | None:
     """Send a VulNexus transactional event through the centralized Resend path."""
     return _send_email_content(recipient, event, build_email(event, **payload))
+
+
+def send_report_ready_email(recipient: str, report_path: str, name: str = "") -> str | None:
+    """Send the generated report as an attachment through the canonical Resend path."""
+    from pathlib import Path
+
+    report = Path(report_path)
+    if not report.is_file():
+        raise FileNotFoundError("Generated report file is unavailable for email delivery")
+    size = report.stat().st_size
+    if size > MAX_REPORT_EMAIL_ATTACHMENT_BYTES:
+        raise ValueError("Generated report is too large to attach to an email")
+
+    attachment = {
+        "filename": f"vulnexus_report_{report.stem}{report.suffix}",
+        "content": b64encode(report.read_bytes()).decode("ascii"),
+    }
+    content = build_email("report_ready", name=name, path="/dashboard/reports")
+    return _send_email_content(recipient, "report_ready", content, attachments=[attachment])
 
 
 def send_sender_identity_test_email(recipient: str) -> tuple[str | None, str]:
@@ -174,6 +202,18 @@ def queue_transactional_email(recipient: str, event: str, payload: dict[str, Any
         return True
     except Exception:
         logger.exception("Transactional email delivery failed event=%s", event)
+        return False
+
+
+def queue_report_ready_email(recipient: str, report_path: str, name: str = "") -> bool:
+    """Attach a generated report without allowing delivery failures to affect the download."""
+    if not settings.EMAIL_ENABLED:
+        return False
+    try:
+        send_report_ready_email(recipient, report_path, name)
+        return True
+    except Exception:
+        logger.exception("Transactional report email delivery failed")
         return False
 
 

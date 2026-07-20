@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from prometheus_client import make_asgi_app
@@ -87,8 +88,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+    expose_headers=["X-Access-Token"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+# Railway terminates TLS at its proxy.  Trust the forwarded scheme so generated
+# redirects and security decisions remain HTTPS-aware behind that proxy.
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 app.include_router(auth_routes.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(scan_routes.router, prefix="/api/v1", tags=["scans"])

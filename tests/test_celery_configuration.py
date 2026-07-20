@@ -17,6 +17,10 @@ def test_celery_uses_the_configured_broker_and_result_backend():
     assert celery_app.conf.task_time_limit == settings.CELERY_TASK_TIME_LIMIT
     assert celery_app.conf.task_default_queue == "scans"
     assert celery_app.conf.task_routes["app.tasks.run_url_scan_task"]["queue"] == "scans"
+    assert celery_app.conf.task_routes["app.tasks.run_ai_review_task"]["queue"] == "ai"
+    assert celery_app.conf.task_acks_late is True
+    assert celery_app.conf.task_reject_on_worker_lost is True
+    assert celery_app.conf.result_expires == settings.CELERY_RESULT_EXPIRES_SECONDS
 
 
 def test_celery_worker_engine_uses_null_pool(monkeypatch):

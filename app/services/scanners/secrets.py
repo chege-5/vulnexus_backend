@@ -8,8 +8,10 @@ from app.services.scanners.base import ScannerResult, TargetScanner
 from app.services.file_scanner import scan_file_content
 
 
-class SecretsScanner(TargetScanner):
-    name = "secrets"
+class SASTScanner(TargetScanner):
+    """Runs syntax-aware source analysis plus secret detection for code scans."""
+
+    name = "sast"
     supported_kinds = {"file", "github", "repository"}
 
     async def scan(self, target: ScanTarget, context: ScanContext) -> ScannerResult:
@@ -29,7 +31,7 @@ class SecretsScanner(TargetScanner):
             vulnerabilities, _features = scan_file_content(content, file_path)
             for vuln in vulnerabilities:
                 findings.append(self._finding(
-                    finding_type="secret",
+                    finding_type="sast",
                     title=vuln.rule_id,
                     description=vuln.description,
                     severity=vuln.severity,
@@ -40,6 +42,10 @@ class SecretsScanner(TargetScanner):
                     remediation=vuln.remediation,
                     raw_data=vuln.model_dump(),
                     target=target.value,
-                    tags=["secrets", "source", "cryptography"],
+                    tags=["sast", "source", "semantic-analysis", vuln.category or "security"],
                 ))
-        return ScannerResult(findings=findings, metadata={"files_scanned": len(source_files)})
+        return ScannerResult(findings=findings, metadata={"files_scanned": len(source_files), "engine": "syntax-aware-semantic", "regex_detection": False})
+
+
+# Compatibility for integrations importing the old misleading class name.
+SecretsScanner = SASTScanner

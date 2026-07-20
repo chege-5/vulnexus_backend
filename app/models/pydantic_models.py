@@ -104,7 +104,7 @@ class VulnerabilityDetailOut(BaseModel):
     remediation: str
     affected_versions: str
     references: list[str]
-    evidence: str
+    evidence: dict = Field(default_factory=dict)
     timeline: list[dict]
     file_path: Optional[str] = None
     line_number: Optional[int] = None
@@ -131,6 +131,13 @@ class VulnerabilityOut(BaseModel):
     cve_id: Optional[str] = None
     file_path: Optional[str] = None
     line_number: Optional[int] = None
+    column_number: Optional[int] = None
+    confidence: Optional[float] = None
+    confidence_label: Optional[str] = None
+    category: Optional[str] = None
+    title: Optional[str] = None
+    evidence: dict = Field(default_factory=dict)
+    code_snippet: Optional[str] = None
     remediation: Optional[str] = None
     cvss_score: Optional[float] = None
     cwe_ids: list[str] | None = None
@@ -232,6 +239,13 @@ class RuleVulnerability(BaseModel):
     category: Optional[str] = None
     file_path: Optional[str] = None
     line_number: Optional[int] = None
+    column_number: Optional[int] = None
+    confidence: Optional[float] = None
+    confidence_label: Optional[str] = None
+    category: Optional[str] = None
+    title: Optional[str] = None
+    evidence: dict = Field(default_factory=dict)
+    code_snippet: Optional[str] = None
     column_number: Optional[int] = None
     crypto_feature: Optional[str] = None
     confidence: float = 0.8

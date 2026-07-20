@@ -24,7 +24,7 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def build_google_auth_url(state: str, redirect_uri: Optional[str] = None) -> str:
+def build_google_auth_url(state: str, redirect_uri: Optional[str] = None, code_challenge: Optional[str] = None) -> str:
     if not settings.GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=501, detail="Google authentication not configured")
 
@@ -40,6 +40,8 @@ def build_google_auth_url(state: str, redirect_uri: Optional[str] = None) -> str
         "include_granted_scopes": "true",
         "state": state,
     }
+    if code_challenge:
+        params.update({"code_challenge": code_challenge, "code_challenge_method": "S256"})
     return f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
 
 
@@ -98,7 +100,7 @@ async def verify_google_token(id_token: str) -> dict:
         }
 
 
-async def exchange_google_code(code: str, redirect_uri: Optional[str] = None) -> dict:
+async def exchange_google_code(code: str, redirect_uri: Optional[str] = None, code_verifier: Optional[str] = None) -> dict:
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=501, detail="Google OAuth is not configured")
 
@@ -115,6 +117,7 @@ async def exchange_google_code(code: str, redirect_uri: Optional[str] = None) ->
                 "code": code,
                 "grant_type": "authorization_code",
                 "redirect_uri": selected_redirect_uri,
+                **({"code_verifier": code_verifier} if code_verifier else {}),
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -151,7 +154,7 @@ async def exchange_google_code(code: str, redirect_uri: Optional[str] = None) ->
         return identity
 
 
-def build_github_auth_url(state: str, redirect_uri: Optional[str] = None) -> str:
+def build_github_auth_url(state: str, redirect_uri: Optional[str] = None, scope: Optional[str] = None) -> str:
     if not settings.GITHUB_CLIENT_ID:
         raise HTTPException(status_code=501, detail="GitHub authentication not configured")
 
@@ -159,7 +162,7 @@ def build_github_auth_url(state: str, redirect_uri: Optional[str] = None) -> str
         "client_id": settings.GITHUB_CLIENT_ID,
         "redirect_uri": redirect_uri or settings.GITHUB_REDIRECT_URI,
         "response_type": "code",
-        "scope": settings.GITHUB_OAUTH_SCOPE,
+        "scope": scope or settings.GITHUB_OAUTH_SCOPE,
         "state": state,
         "allow_signup": "true",
     }
@@ -216,6 +219,7 @@ async def exchange_github_code(code: str, redirect_uri: Optional[str] = None) ->
             "access_token": access_token,
             "github_username": user_data.get("login", ""),
             "metadata": metadata,
+            "email_verified": True,
         }
 
 
@@ -319,8 +323,8 @@ async def oauth_login_or_register(
         if provider_email_verified and user.email == email.lower():
             user.email_verified = True
 
-        oauth_account.access_token = access_token or oauth_account.access_token
-        oauth_account.refresh_token = refresh_token or oauth_account.refresh_token
+        oauth_account.access_token = await encrypt_token(access_token) if access_token else oauth_account.access_token
+        oauth_account.refresh_token = await encrypt_token(refresh_token) if refresh_token else oauth_account.refresh_token
         oauth_account.expires_at = datetime.now(timezone.utc) + timedelta(days=365)
         user.last_login = datetime.now(timezone.utc)
         user.avatar_url = avatar_url or user.avatar_url
@@ -353,15 +357,15 @@ async def oauth_login_or_register(
                 user_id=target_user.id,
                 provider=provider,
                 provider_user_id=provider_user_id,
-                access_token=access_token,
-                refresh_token=refresh_token,
+                access_token=await encrypt_token(access_token) if access_token else None,
+                refresh_token=await encrypt_token(refresh_token) if refresh_token else None,
                 expires_at=datetime.now(timezone.utc) + timedelta(days=365),
             ))
         else:
             logger.info("OAuth account link updated: provider=%s user_id=%s", provider, target_user.id)
             existing_link.provider_user_id = provider_user_id
-            existing_link.access_token = access_token or existing_link.access_token
-            existing_link.refresh_token = refresh_token or existing_link.refresh_token
+            existing_link.access_token = await encrypt_token(access_token) if access_token else existing_link.access_token
+            existing_link.refresh_token = await encrypt_token(refresh_token) if refresh_token else existing_link.refresh_token
             existing_link.expires_at = datetime.now(timezone.utc) + timedelta(days=365)
 
         target_user.avatar_url = avatar_url or target_user.avatar_url
@@ -395,8 +399,8 @@ async def oauth_login_or_register(
         user_id=user.id,
         provider=provider,
         provider_user_id=provider_user_id,
-        access_token=access_token,
-        refresh_token=refresh_token,
+        access_token=await encrypt_token(access_token) if access_token else None,
+        refresh_token=await encrypt_token(refresh_token) if refresh_token else None,
         expires_at=datetime.now(timezone.utc) + timedelta(days=365),
     ))
 
@@ -521,13 +525,14 @@ async def _github_primary_email(client: httpx.AsyncClient, access_token: str, lo
     )
     if response.status_code == 200:
         emails = response.json()
-        primary_email = next((item for item in emails if item.get("primary")), None)
+        primary_email = next((item for item in emails if item.get("primary") and item.get("verified")), None)
         if primary_email and primary_email.get("email"):
             return primary_email["email"]
         verified_email = next((item for item in emails if item.get("verified") and item.get("email")), None)
         if verified_email and verified_email.get("email"):
             return verified_email["email"]
-    return f"{login}@github.local"
+    logger.warning("GitHub OAuth rejected because no verified email was returned: login=%s", login)
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="GitHub account has no verified email address")
 
 
 async def _decrypt_access_token(encrypted_token: str) -> str:

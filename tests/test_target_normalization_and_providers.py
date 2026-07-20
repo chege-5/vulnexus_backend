@@ -199,7 +199,7 @@ async def test_virustotal_file_lookup_requires_hash_and_never_uploads_source():
 
 
 @pytest.mark.asyncio
-async def test_ai_uses_fallback_after_primary_failure(monkeypatch):
+async def test_empty_scan_skips_provider_fallbacks(monkeypatch):
     service = AIExplanationService()
     calls = []
     async def request(*args, **kwargs):
@@ -212,8 +212,9 @@ async def test_ai_uses_fallback_after_primary_failure(monkeypatch):
     monkeypatch.setattr("app.services.ai.explanations.settings.OPENROUTER_API_KEY", "fallback")
     monkeypatch.setattr(service, "_request", request)
     result = await service.explain_scan(target="https://example.com", findings=[], score=2.0)
-    assert result["provider"] == "openrouter"
-    assert len(calls) == 2
+    assert result["status"] == "not_required"
+    assert result["provider"] is None
+    assert calls == []
 
 
 @pytest.mark.asyncio
