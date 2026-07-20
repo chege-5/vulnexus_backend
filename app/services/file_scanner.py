@@ -1,96 +1,26 @@
+"""SAST facade for the syntax-aware semantic analysis engine.
+
+No finding is made by a regular expression.  Detection comes from parsed
+Python ASTs or token streams; this module maps semantic hits to the versioned
+YAML rule catalogue and produces safely redacted evidence.
+"""
 from __future__ import annotations
 
 import math
-import re
-from dataclasses import dataclass
 from pathlib import Path
 
-from app.config import settings
 from app.models.pydantic_models import CryptoFeatures, RuleVulnerability
 from app.services.rule_loader import ScannerRule, load_scanner_rules
+from app.services.semantic_engine import SemanticMatch, analyze
 from app.utils.logger import get_logger
 from app.utils.redaction import redact_text
 
 logger = get_logger(__name__)
 
-SECURITY_CONTEXT_TERMS = (
-    "password", "passwd", "secret", "token", "sign", "signature", "auth", "credential",
-    "session", "jwt", "hmac", "certificate", "encrypt", "decrypt", "key", "salt", "iv",
-    "csrf", "reset", "otp", "bearer", "oauth",
-)
-NON_SECURITY_CONTEXT_TERMS = ("checksum", "etag", "cache", "dedupe", "fingerprint", "nonsecurity", "non-security")
-CONFIG_SUFFIXES = (".env", ".yml", ".yaml", ".json", ".toml", ".tf", ".ini", ".conf")
 EXCLUDED_PATH_PARTS = {"node_modules", "vendor", "dist", "build", ".git", "__pycache__"}
 EXCLUDED_SUFFIXES = (".lock", ".min.js", ".map")
-MAX_MATCHES_PER_RULE_PER_FILE = 25
 MAX_FINDINGS_PER_FILE = 25
-
-
-LEGACY_RULE_IDS = {
-    "SAST_PY_MD5_SHA1": "WEAK_HASH_MD5",
-    "SAST_PY_WEAK_CIPHER_DES_RC4_ECB": "WEAK_CIPHER_AES-ECB",
-    "SAST_PY_STATIC_IV_NONCE": "STATIC_IV",
-    "SAST_PY_RANDOM_TOKEN": "INSECURE_RANDOM",
-    "SAST_GENERIC_HARDCODED_SECRET": "HARDCODED_KEY",
-    "SAST_PRIVATE_KEY_BLOCK": "HARDCODED_KEY",
-    "SAST_GCP_SERVICE_ACCOUNT_KEY": "HARDCODED_KEY",
-    "SAST_AWS_ACCESS_KEY": "HARDCODED_KEY",
-    "SAST_JWT_SECRET": "HARDCODED_KEY",
-    "SAST_WEAK_RSA_KEY_SIZE": "SMALL_RSA_KEY",
-    "WEAK_HASH_MD5_PY_HASHLIB": "WEAK_HASH_MD5",
-    "WEAK_HASH_CRYPTOJS_MD5": "WEAK_HASH_MD5",
-    "WEAK_HASH_JAVA_MD5": "WEAK_HASH_MD5",
-    "WEAK_HASH_NODE_MD5": "WEAK_HASH_MD5",
-    "WEAK_HASH_SHA1_PY_HASHLIB": "WEAK_HASH_SHA1",
-    "WEAK_HASH_CRYPTOJS_SHA1": "WEAK_HASH_SHA1",
-    "WEAK_HASH_JAVA_SHA1": "WEAK_HASH_SHA1",
-    "WEAK_HASH_NODE_SHA1": "WEAK_HASH_SHA1",
-    "HARDCODED_AWS_ACCESS_KEY": "HARDCODED_KEY",
-    "HARDCODED_AWS_SECRET_KEY": "HARDCODED_KEY",
-    "HARDCODED_AZURE_CLIENT_SECRET": "HARDCODED_KEY",
-    "HARDCODED_AZURE_TENANT_SECRET": "HARDCODED_KEY",
-    "HARDCODED_GCP_PRIVATE_KEY": "HARDCODED_KEY",
-    "HARDCODED_GCP_PRIVATE_KEY_ID": "HARDCODED_KEY",
-    "HARDCODED_JWT_SECRET": "HARDCODED_KEY",
-    "HARDCODED_OAUTH_SECRET": "HARDCODED_KEY",
-    "HARDCODED_BEARER_TOKEN": "HARDCODED_KEY",
-    "HARDCODED_API_KEY": "HARDCODED_KEY",
-    "HARDCODED_SSH_PRIVATE_KEY": "HARDCODED_KEY",
-    "HARDCODED_RSA_PRIVATE_KEY": "HARDCODED_KEY",
-    "HARDCODED_EC_PRIVATE_KEY": "HARDCODED_KEY",
-    "HARDCODED_DATABASE_URL": "HARDCODED_KEY",
-    "HARDCODED_MONGO_URI": "HARDCODED_KEY",
-    "HARDCODED_POSTGRES_URI": "HARDCODED_KEY",
-    "HARDCODED_MYSQL_URI": "HARDCODED_KEY",
-    "HARDCODED_REDIS_PASSWORD": "HARDCODED_KEY",
-    "INSECURE_RANDOM_PY_RANDOM": "INSECURE_RANDOM",
-    "INSECURE_RANDOM_PY_RANDINT": "INSECURE_RANDOM",
-    "INSECURE_RANDOM_PY_CHOICE": "INSECURE_RANDOM",
-    "INSECURE_RANDOM_JS_MATH_RANDOM": "INSECURE_RANDOM",
-    "INSECURE_RANDOM_JAVA_UTIL_RANDOM": "INSECURE_RANDOM",
-    "INSECURE_RANDOM_JAVA_NEW_RANDOM": "INSECURE_RANDOM",
-    "INSECURE_RANDOM_PHP_RAND": "INSECURE_RANDOM",
-    "INSECURE_RANDOM_PHP_MT_RAND": "INSECURE_RANDOM",
-    "INSECURE_RANDOM_PHP_SRAND": "INSECURE_RANDOM",
-    "INSECURE_RANDOM_GO_MATH_RAND": "INSECURE_RANDOM",
-    "INSECURE_RANDOM_WEAK_UUID_TOKEN": "INSECURE_RANDOM",
-    "INSECURE_RANDOM_TIMESTAMP_TOKEN": "INSECURE_RANDOM",
-    "WEAK_PBKDF2_ITERATIONS": "WEAK_KDF",
-    "WEAK_BCRYPT_ROUNDS": "WEAK_KDF",
-}
-
-
-@dataclass(frozen=True)
-class RuleMatch:
-    rule: ScannerRule
-    line_number: int
-    column_number: int
-    match_text: str
-    pattern: str
-    start: int
-    end: int
-    occurrence: int
-    suppressed_count: int = 0
+MAX_MATCHES_PER_RULE_PER_FILE = 25
 
 
 def scan_file_content(content: str, file_path: str) -> tuple[list[RuleVulnerability], CryptoFeatures]:
@@ -98,165 +28,101 @@ def scan_file_content(content: str, file_path: str) -> tuple[list[RuleVulnerabil
     if _is_excluded_path(file_path):
         return [], features
 
-    lines = content.split("\n")
-    matches = _find_matches(lines, file_path)
-    vulns: list[RuleVulnerability] = []
-    suppressed_by_file = max(0, len(matches) - MAX_FINDINGS_PER_FILE)
+    rule_index = {rule.id: rule for rule in load_scanner_rules()}
+    matches = [
+        item for item in analyze(content, file_path)
+        if item.rule_id in rule_index
+        and not (rule_index[item.rule_id].category == "Weak hashing" and "checksum" in item.matched_text.lower())
+    ]
+    per_rule: dict[str, int] = {}
+    accepted: list[SemanticMatch] = []
+    suppressed: dict[str, int] = {}
+    for item in matches:
+        count = per_rule.get(item.rule_id, 0)
+        if count >= MAX_MATCHES_PER_RULE_PER_FILE:
+            suppressed[item.rule_id] = suppressed.get(item.rule_id, 0) + 1
+            continue
+        per_rule[item.rule_id] = count + 1
+        accepted.append(item)
 
-    for occurrence, match in enumerate(matches[:MAX_FINDINGS_PER_FILE], 1):
-        vuln = _make_vulnerability(match, lines, file_path, occurrence, suppressed_by_file + match.suppressed_count)
-        vulns.append(vuln)
-        _update_features(features, match.rule, match.match_text)
-
-    return vulns, [features][0]
+    accepted.sort(key=lambda item: (-_severity_rank(rule_index[item.rule_id].severity), item.line_number, item.column_number, item.rule_id))
+    omitted = max(0, len(accepted) - MAX_FINDINGS_PER_FILE)
+    findings = [
+        _make_vulnerability(item, rule_index[item.rule_id], content, file_path, occurrence, omitted + suppressed.get(item.rule_id, 0))
+        for occurrence, item in enumerate(accepted[:MAX_FINDINGS_PER_FILE], 1)
+    ]
+    for finding in findings:
+        _update_features(features, finding)
+    return findings, features
 
 
 def scan_files(file_paths: list[str]) -> tuple[list[RuleVulnerability], list[CryptoFeatures]]:
-    all_vulns = []
-    all_features = []
-    for fp in file_paths:
+    all_findings: list[RuleVulnerability] = []
+    all_features: list[CryptoFeatures] = []
+    for path in file_paths:
         try:
-            content = Path(fp).read_text(errors="ignore")
-            vulns, features = scan_file_content(content, fp)
-            all_vulns.extend(vulns)
+            findings, features = scan_file_content(Path(path).read_text(errors="ignore"), path)
+            all_findings.extend(findings)
             all_features.append(features)
-        except Exception as e:
-            logger.error("Error scanning %s: %s", fp, e)
-    return all_vulns, all_features
+        except OSError as exc:
+            logger.warning("Unable to scan file %s: %s", path, exc)
+    return all_findings, all_features
 
 
 def compute_entropy(data: bytes) -> float:
     if not data:
         return 0.0
-    freq = [0] * 256
-    for b in data:
-        freq[b] += 1
+    frequencies = [0] * 256
+    for value in data:
+        frequencies[value] += 1
     length = len(data)
-    entropy = 0.0
-    for count in freq:
-        if count > 0:
-            p = count / length
-            entropy -= p * math.log2(p)
-    return entropy
+    return -sum((count / length) * math.log2(count / length) for count in frequencies if count)
 
 
-def _find_matches(lines: list[str], file_path: str) -> list[RuleMatch]:
-    lower_path = file_path.lower()
-    all_matches: list[RuleMatch] = []
-    seen: set[tuple[str, str, int, str]] = set()
-    per_rule_counts: dict[str, int] = {}
-    per_rule_suppressed: dict[str, int] = {}
-
-    for rule in load_scanner_rules():
-        if not _rule_applies_to_path(rule, lower_path):
-            continue
-        if rule.file_config_only and not _looks_like_config(lower_path):
-            continue
-        for line_number, line in enumerate(lines, 1):
-            for pattern, compiled in zip(rule.regex, rule.compiled_regex):
-                for match in compiled.finditer(line):
-                    if not _match_allowed(rule, match, lines, line_number, lower_path):
-                        continue
-                    start, end = match.span()
-                    normalized = redact_text(match.group(0)).strip().lower()
-                    dedupe_id = _dedupe_group(rule, match.group(0))
-                    dedupe_key = (dedupe_id, lower_path, line_number) if (rule.dedupe_group or dedupe_id != rule.id) else (dedupe_id, lower_path, line_number, normalized)
-                    if dedupe_key in seen:
-                        continue
-                    if per_rule_counts.get(rule.id, 0) >= MAX_MATCHES_PER_RULE_PER_FILE:
-                        per_rule_suppressed[rule.id] = per_rule_suppressed.get(rule.id, 0) + 1
-                        continue
-                    seen.add(dedupe_key)
-                    per_rule_counts[rule.id] = per_rule_counts.get(rule.id, 0) + 1
-                    all_matches.append(RuleMatch(
-                        rule=rule,
-                        line_number=line_number,
-                        column_number=start + 1,
-                        match_text=match.group(0),
-                        pattern=pattern,
-                        start=start,
-                        end=end,
-                        occurrence=len(all_matches) + 1,
-                    ))
-    with_suppression = [
-        RuleMatch(
-            rule=item.rule,
-            line_number=item.line_number,
-            column_number=item.column_number,
-            match_text=item.match_text,
-            pattern=item.pattern,
-            start=item.start,
-            end=item.end,
-            occurrence=item.occurrence,
-            suppressed_count=per_rule_suppressed.get(item.rule.id, 0),
-        )
-        for item in all_matches
-    ]
-    return sorted(with_suppression, key=lambda item: (-_severity_rank(item.rule.severity), -item.rule.confidence, -item.rule.priority, item.line_number, item.column_number, item.rule.id))
-
-
-def _match_allowed(rule: ScannerRule, match: re.Match[str], lines: list[str], line_number: int, lower_path: str) -> bool:
-    context = _line_context(lines, line_number)
-    if rule.id == "WEAK_HASH_CRC32_SECURITY" and not _has_security_context(context):
-        return False
-    if rule.category == "Weak hashing" and any(term in context.lower() for term in NON_SECURITY_CONTEXT_TERMS):
-        return False
-    if rule.id == "SAST_JS_MATH_RANDOM_TOKEN" and not _has_security_context(context):
-        return False
-    if rule.id == "SAST_FASTAPI_INSECURE_COOKIE_FLAGS":
-        lower_line = match.group(0).lower()
-        if "secure=true" in lower_line and "httponly=true" in lower_line and "samesite=" in lower_line:
-            return False
-    if rule.id == "CBC_WITHOUT_AUTH" and _has_authentication_context(_line_context(lines, line_number, radius=4)):
-        return False
-    if rule.numeric_group_below is not None and not _captured_number_below(match, rule.numeric_group_below):
-        return False
-    return True
-
-
-def _make_vulnerability(
-    match: RuleMatch,
-    lines: list[str],
-    file_path: str,
-    occurrence: int,
-    suppressed_by_file: int,
-) -> RuleVulnerability:
-    rule = match.rule
-    context = _line_context(lines, match.line_number)
-    confidence, label, severity = _adjust_context(rule, context, file_path.lower())
-    evidence = _source_evidence(lines, match, extra={
+def _make_vulnerability(match: SemanticMatch, rule: ScannerRule, content: str, file_path: str, occurrence: int, suppressed_count: int) -> RuleVulnerability:
+    lines = content.splitlines()
+    preview = lines[match.line_number - 1] if 0 < match.line_number <= len(lines) else match.matched_text
+    confidence = min(0.99, max(0.05, rule.confidence + match.confidence_delta))
+    confidence_label = "confirmed" if match.analyzer in {"python-ast", "token-literal", "configuration-token"} else "probable"
+    severity = rule.severity
+    if rule.category == "Weak hashing" and "checksum" in preview.lower():
+        confidence, confidence_label, severity = 0.45, "informational", "Low"
+    evidence = {
         "rule_id": rule.id,
         "source_rule_id": rule.id,
         "rule_name": rule.title,
         "category": rule.category,
-        "matched_pattern": rule.id,
-        "regex": rule.regex[0],
-        "matched_text": redact_text(match.match_text),
+        "analysis_engine": match.analyzer,
+        "detection_method": "syntax-aware semantic analysis",
+        "line_number": match.line_number,
         "column_number": match.column_number,
+        "line_preview": redact_text(preview.strip())[:240],
+        "context_preview": redact_text(_context(lines, match.line_number))[:800],
+        "matched_text": redact_text(match.matched_text)[:240],
         "occurrence": occurrence,
         "occurrence_count": 1,
-        "suppressed_count": suppressed_by_file,
+        "suppressed_count": suppressed_count,
         "rule_pack": rule.pack,
         "cvss_hint": rule.cvss_hint,
         "requires_review": rule.requires_review,
-    })
+    }
     return RuleVulnerability(
         rule_id=rule.id,
         title=rule.title,
         category=rule.category,
-        description=_explanation(rule),
+        description=f"{rule.title}. {rule.recommendation}",
         severity=severity,
         file_path=file_path,
         line_number=match.line_number,
         column_number=match.column_number,
         crypto_feature=rule.crypto_feature,
         confidence=confidence,
-        confidence_label=label,
+        confidence_label=confidence_label,
         default_severity=rule.severity,
         cvss_hint=rule.cvss_hint,
         requires_review=rule.requires_review,
         evidence=evidence,
-        explanation=_explanation(rule),
+        explanation=f"{rule.title}. {rule.recommendation}",
         remediation=rule.recommendation,
         recommendation=rule.recommendation,
         cwe_ids=list(rule.cwe),
@@ -265,171 +131,33 @@ def _make_vulnerability(
     )
 
 
-def _adjust_context(rule: ScannerRule, context: str, lower_path: str) -> tuple[float, str, str]:
-    if rule.category == "Weak hashing":
-        confidence, label = _context_confidence(context)
-        severity = "Medium" if confidence >= 0.75 else "Low"
-        return max(confidence, rule.confidence if confidence >= 0.75 else 0), label, severity
-    if rule.category == "Insecure randomness":
-        if _has_security_context(context):
-            return rule.confidence, "probable", rule.severity
-        return min(rule.confidence, 0.55), "informational", "Low"
-    if rule.config_only and _looks_like_config(lower_path):
-        return max(rule.confidence, 0.92), "confirmed", "High" if rule.severity == "Low" else rule.severity
-    if rule.category == "Hardcoded keys":
-        return rule.confidence, "confirmed", rule.severity
-    return rule.confidence, rule.confidence_label, rule.severity
+def _context(lines: list[str], line: int, radius: int = 2) -> str:
+    return "\n".join(lines[max(0, line - radius - 1):min(len(lines), line + radius)])
 
 
-def _rule_applies_to_path(rule: ScannerRule, lower_path: str) -> bool:
-    if "generic" in rule.languages:
-        return True
-    normalized = lower_path.replace("\\", "/")
-    suffix = Path(normalized).suffix
-    language_by_suffix = {
-        ".py": "python", ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript", ".ts": "typescript", ".tsx": "typescript",
-        ".java": "java", ".kt": "kotlin", ".php": "php", ".rb": "ruby", ".go": "go", ".c": "c", ".h": "c", ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp",
-        ".yml": "yaml", ".yaml": "yaml", ".json": "json", ".toml": "toml", ".ini": "ini", ".tf": "terraform", ".sh": "shell", ".conf": "nginx", ".env": "shell",
-    }
-    language = language_by_suffix.get(suffix)
-    return language in rule.languages or (language == "typescript" and "javascript" in rule.languages)
-
-
-def _update_features(features: CryptoFeatures, rule: ScannerRule, match_text: str) -> None:
-    feature = (rule.crypto_feature or "").upper()
-    if not feature:
-        identifier = rule.id.upper()
-        feature = next((name for name in ("MD5", "SHA1", "3DES", "DES", "RC2", "RC4", "BLOWFISH", "AES-ECB", "CBC", "RSA", "AES", "IV") if name in identifier), "")
-    if feature == "MD5":
-        features.uses_md5 = True
-    elif feature == "SHA1":
-        features.uses_sha1 = True
-    elif feature in {"DES", "3DES"}:
-        features.uses_des = True
-    elif feature in {"RC2", "RC4"}:
-        features.uses_rc2 = True
-    elif feature == "AES-ECB" or (feature == "ECB"):
-        features.uses_ecb = True
-    elif feature in {"IV", "CBC"}:
-        features.cipher_mode = feature
-    elif rule.category == "Hardcoded keys":
+def _update_features(features: CryptoFeatures, finding: RuleVulnerability) -> None:
+    rule_id = finding.rule_id
+    if "MD5" in rule_id:
+        features.uses_md5 = finding.confidence >= 0.7
+    elif "SHA1" in rule_id or "SHA_1" in rule_id:
+        features.uses_sha1 = finding.confidence >= 0.7
+    elif any(term in rule_id for term in ("DES", "RC4", "ECB")):
+        features.uses_des = "DES" in rule_id
+        features.uses_rc2 = "RC4" in rule_id
+        features.uses_ecb = "ECB" in rule_id
+    elif "RSA" in rule_id and "KEY" in rule_id:
+        features.rsa_key_small = "SMALL" in rule_id
+    elif finding.category == "Hardcoded keys":
         features.hardcoded_key = True
-    elif rule.category == "Insecure randomness":
+    elif finding.category == "Insecure randomness":
         features.insecure_random = True
-    elif feature == "RSA" and rule.numeric_group_below is not None:
-        features.rsa_key_small = True
-        features.key_size = _first_int_from_text(match_text)
-    elif feature == "AES" and rule.numeric_group_below is not None:
-        features.aes_key_small = True
-        features.key_size = _first_int_from_text(match_text)
-
-
-def _line_context(lines: list[str], line_number: int, radius: int = 2) -> str:
-    start = max(0, line_number - 1 - radius)
-    end = min(len(lines), line_number + radius)
-    return "\n".join(lines[start:end])
-
-
-def _context_confidence(context: str) -> tuple[float, str]:
-    lower = context.lower()
-    if any(term in lower for term in SECURITY_CONTEXT_TERMS):
-        return 0.9, "probable"
-    if any(term in lower for term in NON_SECURITY_CONTEXT_TERMS):
-        return 0.45, "informational"
-    return 0.68, "probable"
-
-
-def _has_security_context(context: str) -> bool:
-    lower = context.lower()
-    return any(term in lower for term in SECURITY_CONTEXT_TERMS)
-
-
-def _has_authentication_context(context: str) -> bool:
-    lower = context.lower()
-    return any(term in lower for term in ("hmac", "mac", "gcm", "poly1305", "authenticate", "authenticated"))
-
-
-def _looks_like_config(lower_path: str) -> bool:
-    return (
-        lower_path.endswith(CONFIG_SUFFIXES)
-        or "docker-compose" in lower_path
-        or ".github" in lower_path
-        or "github\\workflows" in lower_path
-        or "github/workflows" in lower_path
-    )
-
-
-def _captured_number_below(match: re.Match[str], threshold: int) -> bool:
-    for group in match.groups():
-        try:
-            return int(group) < threshold
-        except (TypeError, ValueError):
-            continue
-    return False
-
-
-def _first_int_from_text(value: str) -> int | None:
-    found = re.search(r"\d+", value)
-    return int(found.group(0)) if found else None
-
-
-def _source_evidence(lines: list[str], match: RuleMatch, extra: dict | None = None) -> dict:
-    line = lines[match.line_number - 1] if 0 < match.line_number <= len(lines) else ""
-    evidence = {
-        "line_number": match.line_number,
-        "column_number": match.column_number,
-        "line_preview": redact_text(line.strip())[:240],
-        "context_preview": redact_text(_line_context(lines, match.line_number))[:800],
-    }
-    if extra:
-        evidence.update(extra)
-    return evidence
-
-
-def _overlaps_existing(spans: list[tuple[int, int]], start: int, end: int) -> bool:
-    return any(start < existing_end and end > existing_start for existing_start, existing_end in spans)
 
 
 def _is_excluded_path(file_path: str) -> bool:
-    lower = file_path.replace("\\", "/").lower()
-    path = Path(lower)
-    if lower.endswith(EXCLUDED_SUFFIXES):
-        return True
-    return any(part in EXCLUDED_PATH_PARTS for part in path.parts)
+    normalized = file_path.replace("\\", "/").lower()
+    path = Path(normalized)
+    return normalized.endswith(EXCLUDED_SUFFIXES) or any(part in EXCLUDED_PATH_PARTS for part in path.parts)
 
 
-def _severity_rank(severity: str) -> int:
-    return {"Critical": 5, "High": 4, "Medium": 3, "Low": 2, "Info": 1}.get(severity, 0)
-
-
-def _dedupe_group(rule: ScannerRule, match_text: str) -> str:
-    if rule.dedupe_group:
-        return rule.dedupe_group
-    lowered = match_text.lower()
-    if rule.id.startswith("WEAK_HASH_MD5") or "hashlib.md5" in lowered:
-        return "crypto:md5"
-    if rule.id.startswith("WEAK_HASH_SHA1") or "hashlib.sha1" in lowered:
-        return "crypto:sha1"
-    if "akia" in lowered:
-        return "secret:aws-access-key"
-    return rule.id
-
-
-def _legacy_rule_id(rule_id: str, match_text: str = "") -> str:
-    if rule_id == "SAST_PY_MD5_SHA1":
-        return "WEAK_HASH_SHA1" if "sha1" in match_text.lower() else "WEAK_HASH_MD5"
-    if rule_id == "SAST_PY_WEAK_CIPHER_DES_RC4_ECB":
-        lowered = match_text.lower()
-        if "des" in lowered:
-            return "WEAK_CIPHER_DES"
-        if "rc4" in lowered or "arc4" in lowered:
-            return "WEAK_CIPHER_RC2"
-    return LEGACY_RULE_IDS.get(rule_id, rule_id)
-
-
-def _explanation(rule: ScannerRule) -> str:
-    return f"{rule.title}. {rule.recommendation}"
-
-
-def _mask_secret(text: str) -> str:
-    return redact_text(text)
+def _severity_rank(value: str) -> int:
+    return {"Critical": 5, "High": 4, "Medium": 3, "Low": 2, "Info": 1}.get(value, 0)

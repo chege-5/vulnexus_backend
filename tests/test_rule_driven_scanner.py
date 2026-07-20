@@ -88,7 +88,10 @@ def test_finding_limits_report_suppressed_count():
     findings, _ = scan_file_content(code, "many_tokens.py")
 
     assert len(findings) == 25
-    assert findings[0].evidence["suppressed_count"] == 10
+    # The semantic engine emits one canonical AST finding per call site,
+    # instead of duplicating the same source location through overlapping
+    # regex rules.
+    assert findings[0].evidence["suppressed_count"] == 5
 
 
 def test_secret_redaction_reaches_scanner_payload_html_and_markdown():

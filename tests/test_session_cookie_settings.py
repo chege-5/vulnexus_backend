@@ -8,6 +8,9 @@ def _production_environment(monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:pass@db.example/vulnexus")
     monkeypatch.setenv("ASYNC_DATABASE_URL", "postgresql+asyncpg://user:pass@db.example/vulnexus")
     monkeypatch.setenv("SECRET_KEY", "s" * 48)
+    monkeypatch.setenv("JWT_SECRET", "j" * 48)
+    monkeypatch.setenv("SESSION_SECRET", "r" * 48)
+    monkeypatch.setenv("OAUTH_STATE_SECRET", "o" * 48)
     monkeypatch.setenv("CSRF_SECRET", "c" * 48)
     monkeypatch.setenv("METRICS_TOKEN", "m" * 48)
     monkeypatch.setenv("SMTP_HOST", "smtp.example")
@@ -15,6 +18,10 @@ def _production_environment(monkeypatch) -> None:
     monkeypatch.setenv("PASSWORD_RESET_URL", "https://app.example/reset-password")
     monkeypatch.setenv("EMAIL_VERIFICATION_URL", "https://app.example/verify-email")
     monkeypatch.setenv("CORS_ORIGINS", "https://app.example")
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example")
+    monkeypatch.setenv("BACKEND_URL", "https://api.example")
+    monkeypatch.setenv("GOOGLE_REDIRECT_URI", "https://api.example/api/v1/auth/google/callback")
+    monkeypatch.setenv("GITHUB_REDIRECT_URI", "https://api.example/api/v1/auth/github/callback")
     monkeypatch.setenv("EMAIL_ENABLED", "false")
 
 
@@ -40,3 +47,15 @@ def test_cross_site_refresh_cookie_cannot_be_insecure(monkeypatch) -> None:
         assert "SESSION_COOKIE_SECURE" in str(exc)
     else:
         raise AssertionError("insecure cross-site refresh cookie configuration was accepted")
+
+
+def test_production_refuses_missing_oauth_state_secret(monkeypatch) -> None:
+    _production_environment(monkeypatch)
+    monkeypatch.delenv("OAUTH_STATE_SECRET", raising=False)
+
+    try:
+        Settings()
+    except RuntimeError as exc:
+        assert "OAUTH_STATE_SECRET" in str(exc)
+    else:
+        raise AssertionError("production accepted a missing OAuth state secret")

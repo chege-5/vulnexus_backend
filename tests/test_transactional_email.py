@@ -22,6 +22,31 @@ def test_disabled_email_does_not_queue_or_crash(monkeypatch) -> None:
     assert email.queue_transactional_email("person@example.com", "welcome", {"name": "Person"}) is False
 
 
+def test_enabled_transactional_email_is_delivered_and_reports_success(monkeypatch) -> None:
+    sent: list[tuple[str, str, dict]] = []
+
+    def fake_send(recipient: str, event: str, payload: dict) -> str:
+        sent.append((recipient, event, payload))
+        return "message-1"
+
+    monkeypatch.setattr(email.settings, "EMAIL_ENABLED", True)
+    monkeypatch.setattr(email, "send_transactional_email", fake_send)
+
+    assert email.queue_transactional_email("person@example.com", "welcome", {"name": "Person"}) is True
+    assert sent == [("person@example.com", "welcome", {"name": "Person"})]
+
+
+def test_transactional_email_failure_is_retryable(monkeypatch) -> None:
+    monkeypatch.setattr(email.settings, "EMAIL_ENABLED", True)
+
+    def failing_send(*args, **kwargs):
+        raise RuntimeError("Resend unavailable")
+
+    monkeypatch.setattr(email, "send_transactional_email", failing_send)
+
+    assert email.queue_transactional_email("person@example.com", "welcome", {"name": "Person"}) is False
+
+
 def test_notification_preferences_default_to_opt_in_for_critical_alerts() -> None:
     assert email.notification_email_enabled({}, "scan_completed") is True
     assert email.notification_email_enabled({}, "critical_finding") is False
@@ -87,3 +112,34 @@ def test_branded_from_uses_the_display_name_with_a_legacy_combined_sender(monkey
     monkeypatch.setattr(email.settings, "EMAIL_FROM", "Old Name <security@jimmysite.me>")
 
     assert email.branded_from_value() == "VulNexus Security Platform <security@jimmysite.me>"
+
+
+def test_report_ready_email_attaches_the_generated_report(monkeypatch, tmp_path) -> None:
+    sent: list[dict] = []
+
+    class FakeRequestsClient:
+        def __init__(self, timeout: int) -> None:
+            self.timeout = timeout
+
+    class FakeEmails:
+        @staticmethod
+        def send(payload: dict) -> dict:
+            sent.append(payload)
+            return {"id": "report-message"}
+
+    fake_resend = SimpleNamespace(RequestsClient=FakeRequestsClient, Emails=FakeEmails)
+    monkeypatch.setitem(sys.modules, "resend", fake_resend)
+    monkeypatch.setattr(email.settings, "EMAIL_ENABLED", True)
+    monkeypatch.setattr(email.settings, "RESEND_API_KEY", "test-key")
+    monkeypatch.setattr(email.settings, "EMAIL_FROM_NAME", "VulNexus Security Platform")
+    monkeypatch.setattr(email.settings, "EMAIL_FROM_ADDRESS", "security@jimmysite.me")
+    monkeypatch.setattr(email.settings, "EMAIL_FROM", None)
+    monkeypatch.setattr(email.settings, "EMAIL_REPLY_TO", None)
+    monkeypatch.setattr(email.settings, "FRONTEND_URL", "https://app.example.com")
+    report = tmp_path / "scan-123.pdf"
+    report.write_bytes(b"%PDF-1.4 test report")
+
+    message_id = email.send_report_ready_email("person@example.com", str(report), "Person")
+
+    assert message_id == "report-message"
+    assert sent[0]["attachments"] == [{"filename": "vulnexus_report_scan-123.pdf", "content": "JVBERi0xLjQgdGVzdCByZXBvcnQ="}]

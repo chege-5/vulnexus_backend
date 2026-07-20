@@ -40,6 +40,13 @@ class ScanStatus(str, enum.Enum):
 class AIReviewStatus(str, enum.Enum):
     PENDING = "pending"
     PROCESSING = "processing"
+    COMPLETED_AI = "completed_ai"
+    COMPLETED_FALLBACK = "completed_fallback"
+    NOT_REQUIRED = "not_required"
+    PARTIAL = "partial"
+    TIMED_OUT = "timed_out"
+    # Retained so existing rows created before the explicit status model are
+    # still readable during a rolling deployment.
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -199,6 +206,19 @@ class OAuthAccount(Base):
     )
 
 
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), index=True, nullable=False)
+    family_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    replaced_by_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class GitHubConnection(Base):
     __tablename__ = "github_connections"
 
@@ -233,6 +253,7 @@ class Scan(Base):
     queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    report_email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     overall_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     result_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -275,6 +296,9 @@ class Vulnerability(Base):
     file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     line_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     code_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Redacted, structured scanner evidence.  This is distinct from report
+    # compliance mappings so source proof survives correlation and exports.
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     remediation: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default=FindingStatus.OPEN.value, index=True)
     assigned_to_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), index=True, nullable=True)

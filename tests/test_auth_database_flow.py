@@ -127,7 +127,7 @@ async def test_complete_email_authentication_and_reset_flow(auth_context) -> Non
         json={"email": "user@example.com", "password": "OldPassword!42"},
     )
     assert login.status_code == 200
-    claims = jwt.decode(login.json()["access_token"], settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    claims = jwt.decode(login.json()["access_token"], settings.JWT_SECRET, algorithms=[settings.ALGORITHM])
     assert claims["role"] == "developer"
     assert (await client.post("/api/v1/auth/refresh", json={})).status_code == 200
 
@@ -209,7 +209,7 @@ async def test_oauth_user_and_admin_roles_are_schema_compatible(auth_context) ->
         assert oauth_user.auth_provider == "google"
         assert oauth_user.password_hash is not None
         assert (await session.execute(select(OAuthAccount))).scalar_one().provider == "google"
-        oauth_claims = jwt.decode(oauth_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        oauth_claims = jwt.decode(oauth_token, settings.JWT_SECRET, algorithms=[settings.ALGORITHM])
         assert oauth_claims["role"] == "developer"
 
         admin = User(
@@ -232,5 +232,5 @@ async def test_oauth_user_and_admin_roles_are_schema_compatible(auth_context) ->
     )
     assert admin_login.status_code == 200
     assert admin_login.json()["user"]["role"] == "admin"
-    admin_claims = jwt.decode(admin_login.json()["access_token"], settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    admin_claims = jwt.decode(admin_login.json()["access_token"], settings.JWT_SECRET, algorithms=[settings.ALGORITHM])
     assert admin_claims["role"] == "admin"
