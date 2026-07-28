@@ -113,7 +113,15 @@ class ScanOrchestrator:
                 user_id=user_id or scan.user_id,
                 target=target,
                 source_path=source_path,
-                options=options,
+                options={
+                    **options,
+                    # Preserve queue-time archive facts (such as the validated
+                    # source count) while scanners add completion metadata.
+                    "scan_result_metadata": {
+                        **(scan.result_metadata or {}),
+                        **(options.get("scan_result_metadata") or {}),
+                    },
+                },
                 stage="queued",
                 progress=0,
             )
@@ -124,7 +132,7 @@ class ScanOrchestrator:
 
             raw_findings: list[RawFinding] = []
             if scan.type == "file":
-                raw_findings.extend(await self._execute_file_pipeline(context))
+                raw_findings.extend(await self._execute_file_pipeline(context, db))
             elif scan.type == "url":
                 raw_findings.extend(await self._execute_url_pipeline(context))
             elif scan.type == "github":
@@ -271,22 +279,47 @@ class ScanOrchestrator:
                 break
         return [finding for result in results for finding in result.findings]
 
-    async def _execute_file_pipeline(self, context: ScanContext) -> list[RawFinding]:
+    async def _execute_file_pipeline(self, context: ScanContext, db) -> list[RawFinding]:
         source_path = Path(context.source_path or context.target.value)
+        archive_metadata: dict[str, Any] | None = None
         if source_path.suffix.lower() == ".zip":
-            extract_dir = Path(settings.UPLOAD_DIR) / str(context.scan_id) / "extracted"
+            extract_dir = (Path(settings.UPLOAD_DIR) / str(context.scan_id) / "extracted").resolve()
             extract_dir.mkdir(parents=True, exist_ok=True)
             extracted = extract_zip(str(source_path), str(extract_dir))
-            context = context.model_copy(update={"source_path": str(extract_dir), "options": {**context.options, "source_files": extracted}})
             source_path = extract_dir
+            archive_metadata = {
+                **((context.options.get("scan_result_metadata") or {}).get("archive") or {}),
+                "files_extracted": len(extracted),
+                "status": "extracted",
+            }
         else:
             extracted = [str(source_path)]
-            context = context.model_copy(update={"options": {**context.options, "source_files": extracted}})
 
+        if not extracted:
+            raise ValueError("ZIP does not contain supported source or configuration files")
+
+        display_paths = {
+            path: str(Path(path).relative_to(source_path)).replace("\\", "/")
+            if archive_metadata else Path(path).name
+            for path in extracted
+        }
+        context.source_path = str(source_path)
+        context.options.update({
+            "source_files": extracted,
+            "source_file_display_paths": display_paths,
+            "scan_result_metadata": {
+                **(context.options.get("scan_result_metadata") or {}),
+                **({"archive": archive_metadata} if archive_metadata else {}),
+                "sast": {"files_scanned": len(extracted)},
+            },
+        })
+
+        # Persist every source file in one transaction.  A ZIP can legitimately
+        # contain hundreds of source files; committing each one made archive
+        # scans needlessly slow before the actual analysis even began.
         for path in extracted:
-            async with database.async_session_maker() as db:
-                db.add(ScanFile(scan_id=context.scan_id, filename=Path(path).name, path=path))
-                await db.commit()
+            db.add(ScanFile(scan_id=context.scan_id, filename=display_paths[path], path=path))
+        await db.flush()
 
         scanners = [self._scanner_instances["sast"], self._scanner_instances["dependency"], self._scanner_instances["compliance"]]
         results = await self._run_scanners(scanners, context)

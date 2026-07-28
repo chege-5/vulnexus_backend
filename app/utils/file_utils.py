@@ -27,6 +27,29 @@ def validate_upload(file: UploadFile) -> bool:
     return ext in ALLOWED_EXTENSIONS
 
 
+def validate_zip_archive(zip_path: str) -> dict[str, int]:
+    """Validate an uploaded archive before it is queued for SAST.
+
+    Extraction still repeats these safety checks in the worker.  Doing a
+    preflight here gives the caller an immediate, useful error for a corrupt,
+    empty, or oversized archive instead of starting a Celery task that can
+    never produce SAST results.
+    """
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            members, total_uncompressed = _safe_zip_members(zf)
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ValueError("Uploaded .zip file is not a valid ZIP archive") from exc
+
+    if not members:
+        raise ValueError("ZIP does not contain supported source or configuration files")
+
+    return {
+        "source_file_count": len(members),
+        "uncompressed_bytes": total_uncompressed,
+    }
+
+
 async def save_upload(file: UploadFile, scan_id: uuid.UUID) -> str:
     scan_dir = Path(settings.UPLOAD_DIR).resolve() / str(scan_id)
     scan_dir.mkdir(parents=True, exist_ok=True)
@@ -46,35 +69,11 @@ async def save_upload(file: UploadFile, scan_id: uuid.UUID) -> str:
 
 
 def extract_zip(zip_path: str, dest_dir: str) -> list[str]:
-    max_entries = settings.MAX_ZIP_ENTRIES
-    max_uncompressed = settings.MAX_ZIP_UNCOMPRESSED_MB * 1024 * 1024
-    max_ratio = settings.MAX_ZIP_RATIO
-
     extracted = []
-    total_uncompressed = 0
 
     with zipfile.ZipFile(zip_path, "r") as zf:
-        entries = [i for i in zf.infolist() if not i.is_dir()]
-        if len(entries) > max_entries:
-            raise ValueError(f"ZIP contains {len(entries)} entries, exceeding limit of {max_entries}")
-
-        for info in entries:
-            total_uncompressed += info.file_size
-            if total_uncompressed > max_uncompressed:
-                raise ValueError(
-                    f"ZIP uncompressed size exceeds {settings.MAX_ZIP_UNCOMPRESSED_MB}MB limit"
-                )
-            if info.compress_size > 0 and info.file_size / info.compress_size > max_ratio:
-                raise ValueError(
-                    f"ZIP entry {info.filename} has suspicious compression ratio "
-                    f"({info.file_size / info.compress_size:.0f}x), possible zip bomb"
-                )
-
-            safe = _sanitize_zip_path(info.filename)
-            if safe is None:
-                continue
-            if Path(safe).suffix.lower() not in ALLOWED_EXTENSIONS or Path(safe).suffix.lower() == ".zip":
-                continue
+        members, _ = _safe_zip_members(zf)
+        for info, safe in members:
             dest_root = Path(dest_dir).resolve()
             target = (dest_root / safe).resolve()
             if dest_root not in target.parents:
@@ -85,6 +84,39 @@ def extract_zip(zip_path: str, dest_dir: str) -> list[str]:
                 shutil.copyfileobj(src, dst)
             extracted.append(str(target))
     return extracted
+
+
+def _safe_zip_members(zf: zipfile.ZipFile) -> tuple[list[tuple[zipfile.ZipInfo, str]], int]:
+    max_entries = settings.MAX_ZIP_ENTRIES
+    max_uncompressed = settings.MAX_ZIP_UNCOMPRESSED_MB * 1024 * 1024
+    max_ratio = settings.MAX_ZIP_RATIO
+    entries = [info for info in zf.infolist() if not info.is_dir()]
+    if len(entries) > max_entries:
+        raise ValueError(f"ZIP contains {len(entries)} entries, exceeding limit of {max_entries}")
+
+    members: list[tuple[zipfile.ZipInfo, str]] = []
+    total_uncompressed = 0
+    for info in entries:
+        if info.flag_bits & 0x1:
+            raise ValueError(f"ZIP entry {info.filename} is encrypted and cannot be scanned")
+        total_uncompressed += info.file_size
+        if total_uncompressed > max_uncompressed:
+            raise ValueError(
+                f"ZIP uncompressed size exceeds {settings.MAX_ZIP_UNCOMPRESSED_MB}MB limit"
+            )
+        if info.compress_size > 0 and info.file_size / info.compress_size > max_ratio:
+            raise ValueError(
+                f"ZIP entry {info.filename} has suspicious compression ratio "
+                f"({info.file_size / info.compress_size:.0f}x), possible zip bomb"
+            )
+
+        safe = _sanitize_zip_path(info.filename)
+        if safe is None:
+            continue
+        suffix = Path(safe).suffix.lower()
+        if suffix in ALLOWED_EXTENSIONS and suffix != ".zip":
+            members.append((info, safe))
+    return members, total_uncompressed
 
 
 def _sanitize_zip_path(member_path: str) -> str | None:

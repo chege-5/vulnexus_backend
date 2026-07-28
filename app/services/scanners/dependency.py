@@ -16,11 +16,13 @@ class DependencyScanner(TargetScanner):
 
     async def scan(self, target: ScanTarget, context: ScanContext) -> ScannerResult:
         paths = self._candidate_files(context, target)
+        display_paths = context.options.get("source_file_display_paths") or {}
         findings = []
         for path in paths:
             dependencies = self._scan_dependency_file(path)
-            findings.extend([self._dependency_observation(path, dep, target.value) for dep in dependencies])
-            findings.extend(await self._osv_findings(path, dependencies, target.value))
+            display_path = Path(display_paths.get(str(path), str(path)))
+            findings.extend([self._dependency_observation(display_path, dep, target.value) for dep in dependencies])
+            findings.extend(await self._osv_findings(display_path, dependencies, target.value))
         return ScannerResult(findings=findings, metadata={"dependency_files": len(paths)})
 
     def _candidate_files(self, context: ScanContext, target: ScanTarget) -> list[Path]:

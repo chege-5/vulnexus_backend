@@ -28,7 +28,7 @@ from app.models.pydantic_models import (
     ScanHistoryItem,
 )
 from app.utils.cache import cache
-from app.utils.file_utils import validate_upload, save_upload, cleanup_scan_dir
+from app.utils.file_utils import validate_upload, validate_zip_archive, save_upload, cleanup_scan_dir
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -163,6 +163,15 @@ async def upload_file(
     except ValueError as e:
         await db.rollback()
         raise HTTPException(status_code=413, detail=str(e))
+
+    if saved_path.lower().endswith(".zip"):
+        try:
+            archive = validate_zip_archive(saved_path)
+        except ValueError as exc:
+            cleanup_scan_dir(scan.id)
+            await db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        scan.result_metadata = {"archive": archive}
 
     await db.commit()
 

@@ -23,12 +23,14 @@ class SASTScanner(TargetScanner):
                 source_files.append(target.value)
 
         findings = []
+        display_paths = context.options.get("source_file_display_paths") or {}
         for file_path in source_files:
             try:
                 content = Path(file_path).read_text(errors="ignore")
             except Exception:
                 continue
-            vulnerabilities, _features = scan_file_content(content, file_path)
+            display_path = display_paths.get(file_path, file_path)
+            vulnerabilities, _features = scan_file_content(content, display_path)
             for vuln in vulnerabilities:
                 findings.append(self._finding(
                     finding_type="sast",
@@ -36,7 +38,7 @@ class SASTScanner(TargetScanner):
                     description=vuln.description,
                     severity=vuln.severity,
                     evidence={"rule_id": vuln.rule_id, **vuln.evidence},
-                    location=f"{file_path}:{vuln.line_number}" if vuln.line_number else file_path,
+                    location=f"{display_path}:{vuln.line_number}" if vuln.line_number else display_path,
                     confidence=vuln.confidence,
                     confidence_label=vuln.confidence_label,
                     remediation=vuln.remediation,

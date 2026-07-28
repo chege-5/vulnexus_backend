@@ -165,6 +165,8 @@ class _PythonAnalyzer(ast.NodeVisitor):
             return
         if any(_looks_security_name(name) for name in names) and _python_call_name(value, self.aliases) in {"random.random", "random.randint", "random.choice", "random.choices"}:
             self._add("SAST_PY_RANDOM_TOKEN", line, column, text, "python-dataflow")
+        if any(_looks_security_name(name) for name in names) and _python_call_name(value, self.aliases) in {"zlib.crc32", "binascii.crc32"}:
+            self._add("SAST_LOW_CRC32_SECURITY", line, column, text, "python-dataflow")
         if any(name.lower() in {"iv", "nonce"} or name.lower().endswith(("_iv", "_nonce")) for name in names) and _literal_string(value):
             self._add("SAST_PY_STATIC_IV_NONCE", line, column, text, "python-ast")
         if any(name.lower() in {"debug", "flask_debug"} for name in names) and _literal_bool(value) is True:
@@ -203,6 +205,10 @@ class _JavaScriptAnalyzer:
                 self._add("WEAK_HASH_CRYPTOJS_SHA1", token, line_text, "javascript-token")
             if path == "Math.random" and next_value == "(" and assignment_name and (_looks_security_name(assignment_name) or "token" in self.content.lower()):
                 self._add("SAST_JS_MATH_RANDOM_TOKEN", token, line_text, "javascript-dataflow")
+            if path in {"crc32", "zlib.crc32"} and next_value == "(" and assignment_name and _looks_security_name(assignment_name):
+                self._add("SAST_LOW_CRC32_SECURITY", token, line_text, "javascript-dataflow")
+            if path == "alg" and next_value == ":" and _next_string_or_number(self.tokens, index) == "none":
+                self._add("SAST_JWT_NONE", token, line_text, "javascript-token")
             if path.endswith("innerHTML") and next_value == "=":
                 self._add("SAST_JS_INNERHTML", token, line_text, "javascript-token")
             if path.endswith("NODE_TLS_REJECT_UNAUTHORIZED") and next_value == "=" and _next_string_or_number(self.tokens, index) in {"0", "false"}:
@@ -238,12 +244,14 @@ class _ConfigurationAnalyzer:
             if key:
                 key_lower = key.lower()
                 value_lower = value.lower()
-                if _looks_secret_name(key) and value:
+                if _looks_secret_name(key) and value and not (_looks_security_name(key) and "crc32" in value_lower):
                     self._add(_secret_rule_for([key], value), number, column, line, "configuration-token")
                 if key_lower in {"debug", "flask_debug"} and value_lower == "true":
                     self._add("SAST_PY_DEBUG_MODE", number, column, line, "configuration-token")
                 if key_lower in {"iv", "nonce"} and len(value) >= 8:
                     self._add("SAST_PY_STATIC_IV_NONCE", number, column, line, "configuration-token")
+                if _looks_security_name(key) and "crc32" in value_lower:
+                    self._add("SAST_LOW_CRC32_SECURITY", number, column, line, "configuration-token")
                 if key_lower in {"rejectunauthorized", "node_tls_reject_unauthorized"} and value_lower in {"false", "0"}:
                     self._add("SAST_NODE_TLS_REJECT_UNAUTHORIZED_FALSE", number, column, line, "configuration-token")
                 if key_lower in {"alg", "algorithm"} and value_lower == "none":
@@ -523,8 +531,8 @@ def _configuration_assignment(line: str) -> tuple[str, str, int]:
     delimiter = "=" if "=" in line else ":" if ":" in line else ""
     if not delimiter: return "", "", 1
     key, value = line.split(delimiter, 1)
-    key = key.strip().strip("\"'")
-    value = value.strip().strip("\"'")
+    key = key.strip().strip("\"'{}[] ")
+    value = value.strip().rstrip(",}").strip().strip("\"'")
     return key, value, line.find(delimiter) + 2
 
 
