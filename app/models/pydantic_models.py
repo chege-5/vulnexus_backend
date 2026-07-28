@@ -24,6 +24,7 @@ class ScanStatusResponse(BaseModel):
     message: Optional[str] = None
     error_message: Optional[str] = None
     details: dict = Field(default_factory=dict)
+    queued_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
 

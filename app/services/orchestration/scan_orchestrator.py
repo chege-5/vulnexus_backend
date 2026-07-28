@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from fastapi.encoders import jsonable_encoder
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import database
@@ -53,6 +58,26 @@ BOUNDED_VULNERABILITY_FIELDS = {
 }
 
 RULE_ID_PATTERN = re.compile(r"^[A-Z][A-Z0-9_-]{1,254}$")
+
+# Provider responses are useful while the scanner is running, but they can be
+# extremely large and occasionally contain values that a JSON database column
+# cannot serialize. Persist stable, user-facing facts instead of the response
+# bodies. This also keeps reports and AI review context bounded.
+PROVIDER_NAMES = {
+    "abuseipdb", "builtwith", "censys", "greynoise", "ipinfo", "shodan",
+    "urlscan", "virustotal", "wappalyzer", "safebrowsing", "ssllabs",
+}
+PROVIDER_PAYLOAD_KEYS = {
+    "raw", "raw_data", "raw_response", "provider_item", "provider_payload",
+    "provider_response", "response_body", "payload",
+}
+PROVIDER_SUMMARY_KEYS = {
+    "provider", "query", "identifier", "summary", "vendor", "success",
+    "cached", "skipped", "status", "status_code", "reason", "message",
+    "error", "classification", "signal_type", "cve_id", "cvss_score",
+    "epss_score", "kev", "exploitability", "references",
+}
+MAX_PROVIDER_SUMMARY_KEYS = 16
 
 
 class ScanPersistenceError(RuntimeError):
@@ -104,6 +129,11 @@ class ScanOrchestrator:
                 logger.info("Ignoring concurrent scan execution scan_id=%s", scan_id)
                 return {"scan_id": str(scan.id), "status": scan.status, "idempotent": True}
 
+            # Keep scalar values outside the ORM instance. A failed flush or
+            # commit expires ORM state, and touching it in an exception path
+            # can issue an implicit async query (MissingGreenlet in workers).
+            persisted_scan_id = scan.id
+            persisted_scan_progress = int(scan.progress or 0)
             logger.info("Scan start scan_id=%s type=%s", scan_id, scan.type)
 
             target = self._build_target(scan, source_path=source_path, options=options)
@@ -126,11 +156,27 @@ class ScanOrchestrator:
                 progress=0,
             )
 
-            await self._mark_scan(db, scan, status=ScanStatus.IN_PROGRESS.value, started_at=datetime.now(timezone.utc), progress=5)
-            await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, message="Scan started", progress=5)
+            started_at = datetime.now(timezone.utc)
+            await self._mark_scan(db, scan, status=ScanStatus.IN_PROGRESS.value, started_at=started_at, progress=5)
+            await self._store_progress(
+                context,
+                status=ScanStatus.IN_PROGRESS.value,
+                stage="initializing",
+                message="Scan worker accepted the job",
+                progress=5,
+                started_at=started_at,
+            )
             await self._raise_if_canceled(scan.id)
 
             raw_findings: list[RawFinding] = []
+            await self._store_progress(
+                context,
+                status=ScanStatus.IN_PROGRESS.value,
+                stage="scanning",
+                message="Running configured security checks",
+                progress=15,
+                started_at=started_at,
+            )
             if scan.type == "file":
                 raw_findings.extend(await self._execute_file_pipeline(context, db))
             elif scan.type == "url":
@@ -142,7 +188,7 @@ class ScanOrchestrator:
             logger.info("Scanner completion scan_id=%s findings=%s", scan_id, len(raw_findings))
 
             await self._raise_if_canceled(scan.id)
-            await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, message="Correlating findings", progress=70)
+            await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, stage="correlating", message="Correlating scan findings", progress=70, started_at=started_at)
             correlated = await self.correlation_engine.correlate(raw_findings)
             displayed = self._display_findings(raw_findings, correlated)
             logger.info(
@@ -155,14 +201,14 @@ class ScanOrchestrator:
             )
 
             await self._raise_if_canceled(scan.id)
-            await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, message="Calculating risk", progress=80)
+            await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, stage="risk_analysis", message="Calculating risk", progress=80, started_at=started_at)
             risk = self.ai_engine.evaluate(correlated)
 
             await self._raise_if_canceled(scan.id)
             # The deterministic scan must finish independently. AI enrichment,
             # remediation review, and enhanced reporting run only after this
             # baseline has been committed and marked completed.
-            await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, message="Saving findings", progress=88)
+            await self._store_progress(context, status=ScanStatus.IN_PROGRESS.value, stage="saving_findings", message="Saving validated findings", progress=88, started_at=started_at)
             enriched = [EnrichedFinding(finding=item) for item in displayed]
 
             try:
@@ -171,11 +217,10 @@ class ScanOrchestrator:
                 await db.rollback()
                 finished_at = datetime.now(timezone.utc)
                 message = self._persistence_error_message(exc)
-                await self._mark_scan(
-                    db,
-                    scan,
-                    status=ScanStatus.FAILED.value,
-                    progress=max(scan.progress or 0, 88),
+                failed_progress = max(persisted_scan_progress, 88)
+                await self._mark_scan_failed_fresh(
+                    persisted_scan_id,
+                    progress=failed_progress,
                     error_message=message,
                     finished_at=finished_at,
                 )
@@ -183,7 +228,7 @@ class ScanOrchestrator:
                     context,
                     status=ScanStatus.FAILED.value,
                     message="Scan failed while saving findings",
-                    progress=max(scan.progress or 0, 88),
+                    progress=failed_progress,
                     error_message=message,
                     finished_at=finished_at,
                 )
@@ -194,11 +239,11 @@ class ScanOrchestrator:
             try:
                 metadata = dict(scan.result_metadata or {})
                 metadata["_ai_review_context"] = [item.model_dump(mode="json") for item in displayed]
-                scan.result_metadata = metadata
+                scan.result_metadata = self._json_column(metadata)
                 await db.commit()
             except Exception:
                 await db.rollback()
-                logger.exception("Unable to save AI review context scan_id=%s", scan.id)
+                logger.exception("Unable to save AI review context scan_id=%s", persisted_scan_id)
 
             finished_at = datetime.now(timezone.utc)
             await self._mark_scan(
@@ -211,7 +256,7 @@ class ScanOrchestrator:
                 overall_score=risk.score,
                 finished_at=finished_at,
             )
-            await self._store_progress(context, status=ScanStatus.COMPLETED.value, message="Scan completed", progress=100, finished_at=finished_at)
+            await self._store_progress(context, status=ScanStatus.COMPLETED.value, stage="completed", message="Scan and baseline report completed", progress=100, started_at=started_at, finished_at=finished_at)
             await self._queue_ai_review(db, scan)
 
             return {
@@ -369,19 +414,25 @@ class ScanOrchestrator:
             return ScannerResult(findings=[], metadata={"scanner": scanner_name, "error": str(exc), "failed": True})
 
     async def _persist_results(self, db, scan: Scan, context: ScanContext, findings: list[EnrichedFinding], risk) -> None:
+        # Never use ``scan`` after a flush/commit failure. These plain values
+        # remain available even when SQLAlchemy expires the ORM identity.
+        persisted_scan_id = scan.id
+        scan_target = scan.target
+        scan_type = scan.type
+        scan_started_at = scan.started_at
         # Queue-time target provenance is security-relevant and must survive
         # completion.  Scanner metadata (for example provider statuses) is
         # additive rather than a replacement for it.
-        scan.result_metadata = {
+        scan.result_metadata = self._json_column({
             **(scan.result_metadata or {}),
             **(context.options.get("scan_result_metadata") or {}),
-        }
+        })
         # Delete-and-replace makes a recovery from a failed persistence attempt
         # deterministic without changing finding IDs for a completed scan (which
         # is never re-executed above).  The delete and replacement share one
         # transaction, so a commit failure rolls both back.
-        await db.execute(delete(Vulnerability).where(Vulnerability.scan_id == scan.id))
-        await db.execute(delete(ComplianceCheck).where(ComplianceCheck.scan_id == scan.id))
+        await db.execute(delete(Vulnerability).where(Vulnerability.scan_id == persisted_scan_id))
+        await db.execute(delete(ComplianceCheck).where(ComplianceCheck.scan_id == persisted_scan_id))
 
         cve_entries: dict[str, CVEEntry] = {}
         known_exploit_count = 0
@@ -400,7 +451,7 @@ class ScanOrchestrator:
                 known_exploit_count += 1
 
             record = self._validated_vulnerability_record(
-                scan_id=scan.id,
+                scan_id=persisted_scan_id,
                 finding_index=index,
                 rule_id=rule_id,
                 incident=incident,
@@ -430,23 +481,29 @@ class ScanOrchestrator:
                 "owasp_category": record["owasp_category"],
                 "nist_control": record["nist_control"],
                 "mitre_technique": record["mitre_technique"],
-                "known_exploit": bool(profile.get("known_exploit")),
-                "classification": incident.classification,
-                "evidence": incident.evidence,
-                "evidence_items": incident.evidence_items,
-                "sources": incident.sources,
-                "affected_assets": incident.related_assets,
-                "limitations": incident.evidence.get("limitations") or incident.evidence.get("errors"),
-                "knowledge": finding.knowledge,
-                "provider_statuses": finding.knowledge.get("threat", {}).get("provider_statuses", []),
-                "graph_context": finding.graph_context,
-                "llm_context": finding.llm_context,
-                "attack_story": finding.knowledge.get("attack", {}).get("attack_story"),
-                "references": finding.references,
+            "known_exploit": bool(profile.get("known_exploit")),
+            "classification": incident.classification,
+            "evidence": self._json_column(incident.evidence),
+            "evidence_items": self._json_column(incident.evidence_items),
+            "sources": self._json_column(incident.sources),
+            "affected_assets": self._json_column(incident.related_assets),
+            "limitations": incident.evidence.get("limitations") or incident.evidence.get("errors"),
+            "knowledge": self._json_column(finding.knowledge),
+            "provider_statuses": self._json_column(finding.knowledge.get("threat", {}).get("provider_statuses", [])),
+            "graph_context": self._json_column(finding.graph_context),
+            "llm_context": self._json_column(finding.llm_context),
+            "attack_story": finding.knowledge.get("attack", {}).get("attack_story"),
+            "references": self._json_column(finding.references),
             })
 
             if finding.cve_id and finding.cve_id not in cve_entries:
-                cve_entries[finding.cve_id] = CVEEntry(cve_id=finding.cve_id, summary=finding.intelligence[0].summary if finding.intelligence else None, cvss_score=finding.cvss_score, published_date=None, references=finding.references or None)
+                cve_entries[finding.cve_id] = CVEEntry(
+                    cve_id=finding.cve_id,
+                    summary=finding.intelligence[0].summary if finding.intelligence else None,
+                    cvss_score=finding.cvss_score,
+                    published_date=None,
+                    references=self._json_column(finding.references or None),
+                )
 
         for record in vulnerability_records:
             db.add(Vulnerability(**record))
@@ -457,14 +514,15 @@ class ScanOrchestrator:
         cve_details = [{"cve_id": entry.cve_id, "summary": entry.summary, "cvss_score": entry.cvss_score, "published_date": entry.published_date.isoformat() if entry.published_date else None, "references": entry.references or []} for entry in cve_entries.values()]
         compliance_checks = build_compliance_checks(vulnerability_payloads, cve_details)
         for item in compliance_checks:
-            db.add(ComplianceCheck(scan_id=scan.id, standard=item["standard"], category=item.get("category"), result=item["result"], score=item.get("score"), details=item.get("details")))
+            db.add(ComplianceCheck(scan_id=persisted_scan_id, standard=item["standard"], category=item.get("category"), result=item["result"], score=item.get("score"), details=self._json_column(item.get("details"))))
 
         try:
+            await db.flush()
             await db.commit()
-            logger.info("Findings DB commit scan_id=%s vulnerabilities=%s", scan.id, len(vulnerability_records))
-        except SQLAlchemyError as exc:
+            logger.info("Findings DB commit scan_id=%s vulnerabilities=%s", persisted_scan_id, len(vulnerability_records))
+        except Exception as exc:
             await db.rollback()
-            logger.exception("Failed to persist validated findings for scan %s", scan.id)
+            logger.exception("Failed to persist validated findings for scan %s", persisted_scan_id)
             raise ScanPersistenceError(
                 "Failed to save scan findings after validation; database rejected the batch"
             ) from exc
@@ -481,11 +539,19 @@ class ScanOrchestrator:
         # the same filename again: that previously made report contents depend
         # on timing and silently overwrote the first artifact.
         try:
+            await self._store_progress(
+                context,
+                status=ScanStatus.IN_PROGRESS.value,
+                stage="report_generation",
+                message="Generating the baseline security report",
+                progress=96,
+                started_at=scan_started_at,
+            )
             await asyncio.to_thread(
                 build_report,
-                scan_id=scan.id,
-                target=scan.target,
-                scan_type=scan.type,
+                scan_id=persisted_scan_id,
+                target=scan_target,
+                scan_type=scan_type,
                 overall_score=risk.score,
                 vulnerabilities=vulnerability_payloads,
                 cve_details=cve_details,
@@ -493,29 +559,30 @@ class ScanOrchestrator:
                 audit_verdict=final_verdict,
                 ai_insight=None,
                 provider_statuses=((scan.result_metadata or {}).get("reputation") or {}).get("provider_statuses") or [],
-                started_at=scan.started_at,
+                started_at=scan_started_at,
                 finished_at=datetime.now(timezone.utc),
             )
         except Exception:
             # Findings have already been committed. A document-rendering
             # outage must not turn a completed security scan into a failure.
-            logger.exception("Baseline report generation failed scan_id=%s", scan.id)
+            logger.exception("Baseline report generation failed scan_id=%s", persisted_scan_id)
 
     async def _queue_ai_review(self, db, scan: Scan) -> None:
         """Queue enrichment after completion without coupling it to scan status."""
+        persisted_scan_id = scan.id
         try:
             from app.celery_app import run_ai_review_task
 
-            run_ai_review_task.delay(str(scan.id))
+            run_ai_review_task.delay(str(persisted_scan_id))
         except Exception as exc:
-            logger.exception("Unable to queue AI review scan_id=%s", scan.id)
+            logger.exception("Unable to queue AI review scan_id=%s", persisted_scan_id)
             try:
                 scan.ai_review_status = AIReviewStatus.FAILED.value
                 scan.ai_review_error = redact_text(str(exc))[:500] or "Unable to queue AI review"
                 await db.commit()
             except Exception:
                 await db.rollback()
-                logger.exception("Unable to persist AI review queue failure scan_id=%s", scan.id)
+                logger.exception("Unable to persist AI review queue failure scan_id=%s", persisted_scan_id)
 
     async def run_ai_review(self, scan_id: UUID) -> dict[str, Any]:
         """Generate assisted remediation independently from the completed scan."""
@@ -684,7 +751,9 @@ class ScanOrchestrator:
                 "contributing_rule_ids": incident.contributing_rule_ids,
             },
         }
-        evidence = redact_data({
+        # Compact provider bodies before text redaction. Redacting a full
+        # urlscan/Censys response is both unnecessary and can be very costly.
+        evidence = redact_data(self._json_column({
             **incident.evidence,
             "correlation_id": incident.correlation_id,
             "contributing_rule_ids": incident.contributing_rule_ids,
@@ -692,7 +761,7 @@ class ScanOrchestrator:
             "confidence_label": incident.evidence.get("confidence_label") or "probable",
             "category": incident.evidence.get("category") or incident.threat_category,
             "title": incident.title,
-        })
+        }))
         if diagnostics:
             compliance_results["diagnostics"] = diagnostics
 
@@ -719,19 +788,110 @@ class ScanOrchestrator:
             "file_path": file_path,
             "line_number": line_number,
             "code_snippet": code_snippet,
-            "evidence": evidence,
+            "evidence": self._json_column(evidence),
             "remediation": normalized_remediation,
             "cve_id": cve_id,
             "cvss_score": finding.cvss_score,
-            "cwe_ids": incident.cwe_ids,
+            "cwe_ids": self._json_column(incident.cwe_ids),
             "owasp_category": owasp_category,
             "nist_control": nist_control,
             "mitre_technique": mitre_technique,
             "known_exploit": bool(profile.get("known_exploit")),
-            "references": finding.references or None,
+            "references": self._json_column(finding.references or None),
             "status": status,
-            "compliance_results": compliance_results,
+            "compliance_results": self._json_column(compliance_results),
         }
+
+    def _json_column(self, value: Any) -> Any:
+        """Return JSON-safe, redacted-size-safe values for every JSON column.
+
+        Scanner dataclasses and provider SDKs legitimately contain datetimes,
+        UUIDs, Decimal values, enums, sets, bytes, and Pydantic models.  The
+        FastAPI encoder is the one serialization boundary used before those
+        values are handed to SQLAlchemy's JSON type.
+        """
+        if value is None:
+            return None
+        encoded = jsonable_encoder(
+            value,
+            custom_encoder={
+                datetime: lambda item: item.isoformat(),
+                UUID: str,
+                Enum: lambda item: item.value,
+                Decimal: str,
+                set: lambda item: sorted(item, key=str),
+                frozenset: lambda item: sorted(item, key=str),
+                bytes: lambda item: base64.b64encode(item).decode("ascii"),
+            },
+        )
+        return self._compact_provider_payloads(encoded)
+
+    def _compact_provider_payloads(self, value: Any, *, provider: str | None = None) -> Any:
+        """Strip raw provider response bodies while preserving compact facts."""
+        if isinstance(value, list):
+            return [self._compact_provider_payloads(item, provider=provider) for item in value]
+        if not isinstance(value, dict):
+            return value
+
+        declared_provider = value.get("provider")
+        active_provider = str(declared_provider or provider or "").casefold()
+        is_provider_payload = active_provider in PROVIDER_NAMES
+        compacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            normalized_key = key_text.casefold()
+            if normalized_key in PROVIDER_NAMES:
+                compacted[key_text] = self._provider_payload_summary(item, provider=normalized_key)
+            elif normalized_key in PROVIDER_PAYLOAD_KEYS and is_provider_payload:
+                compacted[key_text] = self._provider_payload_summary(item, provider=active_provider)
+            else:
+                compacted[key_text] = self._compact_provider_payloads(item, provider=active_provider if is_provider_payload else provider)
+        return compacted
+
+    def _provider_payload_summary(self, payload: Any, *, provider: str) -> dict[str, Any]:
+        """Describe a provider response without retaining its oversized body."""
+        if isinstance(payload, dict):
+            if payload.get("raw_response_omitted") is True:
+                return payload
+            summary: dict[str, Any] = {
+                "provider": provider.upper(),
+                "raw_response_omitted": True,
+                "top_level_keys": sorted(str(key) for key in payload)[:MAX_PROVIDER_SUMMARY_KEYS],
+            }
+            for key in PROVIDER_SUMMARY_KEYS:
+                if key not in payload:
+                    continue
+                summary[key] = self._compact_summary_value(payload[key])
+            counts = {
+                str(key): len(item)
+                for key, item in payload.items()
+                if isinstance(item, (list, tuple, set, frozenset, dict))
+            }
+            if counts:
+                summary["collection_counts"] = dict(list(counts.items())[:MAX_PROVIDER_SUMMARY_KEYS])
+            return summary
+        if isinstance(payload, (list, tuple, set, frozenset)):
+            return {
+                "provider": provider.upper(),
+                "raw_response_omitted": True,
+                "item_count": len(payload),
+            }
+        return {
+            "provider": provider.upper(),
+            "raw_response_omitted": True,
+            "value_type": type(payload).__name__,
+        }
+
+    def _compact_summary_value(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return redact_text(value)[:500]
+        if isinstance(value, list):
+            return [self._compact_summary_value(item) for item in value[:10]]
+        if isinstance(value, dict):
+            return {str(key): self._compact_summary_value(item) for key, item in list(value.items())[:10]}
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        return redact_text(value)[:500]
 
     def _normalize_rule_id(
         self,
@@ -898,11 +1058,45 @@ class ScanOrchestrator:
         return ScanTarget(kind=kind, value=scan.target, display_name=scan.target, metadata=metadata)
 
     async def _mark_scan(self, db, scan: Scan, **updates) -> None:
+        persisted_scan_id = scan.id
+        persisted_status = updates.get("status", scan.status)
         for key, value in updates.items():
             if value is not None:
                 setattr(scan, key, value)
-        await db.commit()
-        logger.info("Scan DB commit scan_id=%s status=%s", scan.id, scan.status)
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+        logger.info("Scan DB commit scan_id=%s status=%s", persisted_scan_id, persisted_status)
+
+    async def _mark_scan_failed_fresh(
+        self,
+        scan_id: UUID,
+        *,
+        progress: int,
+        error_message: str,
+        finished_at: datetime,
+    ) -> None:
+        """Finalize a failed scan without reusing a rolled-back ORM instance."""
+        async with database.async_session_maker() as failure_db:
+            try:
+                await failure_db.execute(
+                    update(Scan)
+                    .where(Scan.id == scan_id)
+                    .values(
+                        status=ScanStatus.FAILED.value,
+                        progress=int(progress),
+                        error_message=error_message,
+                        finished_at=finished_at,
+                    )
+                )
+                await failure_db.commit()
+                logger.info("Scan failure DB commit scan_id=%s", scan_id)
+            except Exception:
+                await failure_db.rollback()
+                logger.exception("Unable to persist failed scan state scan_id=%s", scan_id)
+                raise
 
     async def _store_progress(self, context: ScanContext, **updates) -> None:
         progress = ScanProgress(scan_id=context.scan_id, status=updates.get("status", "queued"), progress=updates.get("progress", context.progress), stage=updates.get("stage", context.stage), message=updates.get("message"), started_at=updates.get("started_at"), finished_at=updates.get("finished_at"), error_message=updates.get("error_message"), details=updates.get("details", {}))
