@@ -296,6 +296,7 @@ async def scan_status(
             message=cached_progress.get("message"),
             error_message=cached_progress.get("error_message") or scan.error_message,
             details=cached_progress.get("details") or {},
+            queued_at=scan.queued_at,
             started_at=scan.started_at,
             finished_at=cached_progress.get("finished_at") or scan.finished_at,
         )
@@ -306,10 +307,11 @@ async def scan_status(
         ai_review_status=scan.ai_review_status,
         ai_review_error=scan.ai_review_error,
         progress=scan.progress,
-        stage=None,
-        message=scan.error_message,
+        stage="queued" if scan.status == ScanStatus.QUEUED.value else None,
+        message=("Waiting for an available scan worker" if scan.status == ScanStatus.QUEUED.value else scan.error_message),
         error_message=scan.error_message,
         details={},
+        queued_at=scan.queued_at,
         started_at=scan.started_at,
         finished_at=scan.finished_at,
     )

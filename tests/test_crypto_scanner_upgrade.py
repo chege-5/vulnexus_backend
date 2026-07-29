@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from app.services.file_scanner import scan_file_content
 from app.services.scanners.tls import TLSScanner
 from app.utils.tls_utils import CertificateAssessment, CipherSuiteAssessment, HSTSAssessment, ProtocolProbe, TLSAssessment, TLSInfo
@@ -38,6 +40,25 @@ def test_tls_scanner_separates_protocol_cipher_certificate_and_hsts_findings():
     assert "WEAK_HSTS" in rule_ids
     assert all(finding.evidence for finding in findings)
     assert all(finding.compliance_mapping for finding in findings)
+
+
+def test_expired_certificate_is_returned_as_a_finding_not_a_scanner_failure():
+    assessment = TLSAssessment(
+        host="expired.example.test",
+        port=443,
+        certificate=CertificateAssessment(
+            not_after=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            expired=True,
+            chain_trusted=False,
+            validation_error="certificate has expired",
+        ),
+    )
+
+    findings = TLSScanner()._build_findings(assessment, "https://expired.example.test")
+    expired = next(finding for finding in findings if finding.raw_data["rule_id"] == "EXPIRED_CERT")
+
+    assert expired.severity == "Critical"
+    assert expired.evidence["not_after"] == "2025-01-01T00:00:00+00:00"
 
 
 def test_source_crypto_scanner_masks_hardcoded_secret_evidence():
